@@ -28,7 +28,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
     /// Avalara tax provider
     /// </summary>
     [AddInName("Avalara tax provider")]
-    public class AvalaraTaxProvider : TaxProvider, IDropDownOptions, IAddInServiceProvider
+    public class AvalaraTaxProvider : TaxProvider, IDropDownOptions
     {
         /// <summary>
         /// Gets the names for ItemCode and TaxCode field.
@@ -40,6 +40,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         public const string BeforeTaxCalculation = "Ecom7CartBeforeTaxCalculation";
         public const string BeforeTaxCommit = "Ecom7CartBeforeTaxCommit";
         public const string OnGetCustomerCode = "Ecom7CartAvalaraOnGetCustomerCode";
+        private OrderDebuggingInfoService _orderDebuggingInfoService = new OrderDebuggingInfoService();
 
         private enum TransactionType
         {
@@ -218,7 +219,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 {
                     message += GetErrorMessage(taxResult);
                 }
-                OrderDebuggingInfo.Save(order, message, "AvaTax");
+                new OrderDebuggingInfoService().Save(order, message, "AvaTax");
             }
             catch (Exception err)
             {
@@ -348,6 +349,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
             int index = 0;
             decimal orderDiscount = 0M;
             CreateTransactionModel transactionModel = result.GetCreateTransactionModel();
+            var priceContext = new PriceContext(order.Currency, order.VatCountry);
 
             foreach (var orderLine in order.OrderLines)
             {
@@ -359,7 +361,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                         transactionModel.lines.Add(line);
                         if (orderLine.HasType(OrderLineType.PointProduct))
                         {
-                            orderDiscount += (-Convert.ToDecimal(orderLine.Product.GetPrice(order.Currency.Code, order.VatCountry.Code2).PriceWithoutVAT));
+                            orderDiscount += (-Convert.ToDecimal(orderLine.Product.GetPrice(priceContext).PriceWithoutVAT));
                         }
                     }
                 }
@@ -425,7 +427,8 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         private LineItemModel GetTaxLine(Order order, OrderLine orderLine, int index, AddressLocationInfo destinationAddress, AddressLocationInfo originAddress)
         {
             LineItemModel line = new LineItemModel();
-            var price = (orderLine.HasType(OrderLineType.PointProduct)) ? orderLine.Product.GetPrice(order.Currency.Code, order.VatCountry.Code2) : GetProductPriceWithoutDiscounts(orderLine);
+            var priceContext = new PriceContext(order.Currency, order.VatCountry);
+            var price = (orderLine.HasType(OrderLineType.PointProduct)) ? orderLine.Product.GetPrice(priceContext) : GetProductPriceWithoutDiscounts(orderLine);
             line.amount = Convert.ToDecimal(price.PriceWithoutVAT);
             line.description = orderLine.ProductName;
             line.addresses = new AddressesModel
@@ -661,7 +664,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
             catch (Exception)
             {
                 cancelTaxResult = null;
-                OrderDebuggingInfo.Save(order, "Error cancelling transaction.", "AvaTax");
+                _orderDebuggingInfoService.Save(order, "Error cancelling transaction.", "AvaTax");
             }
 
             if (cancelTaxResult != null)
@@ -685,7 +688,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                         }
                     }
 
-                    OrderDebuggingInfo.Save(order, stringBuilder.ToString(), "AvaTax");
+                    _orderDebuggingInfoService.Save(order, stringBuilder.ToString(), "AvaTax");
                 }
                 else
                 {
@@ -698,7 +701,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                         }
                     }
 
-                    OrderDebuggingInfo.Save(order, "Transaction was cancelled", "AvaTax");
+                    _orderDebuggingInfoService.Save(order, "Transaction was cancelled", "AvaTax");
                 }
             }
         }
@@ -743,7 +746,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 {
                     message += GetErrorMessage(taxResult);
                 }
-                OrderDebuggingInfo.Save(order, message, "AvaTax");
+                _orderDebuggingInfoService.Save(order, message, "AvaTax");
             }
             catch (Exception err)
             {
@@ -791,7 +794,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 {
                     message += GetErrorMessage(taxResult);
                 }
-                OrderDebuggingInfo.Save(order, message, "AvaTax");
+                _orderDebuggingInfoService.Save(order, message, "AvaTax");
             }
             catch (Exception err)
             {
@@ -1043,7 +1046,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
             tax.Name = taxDetail.taxName;
             tax.Product = product;
 
-            tax.Amount = new PriceRaw((double)taxDetail.tax, Common.Application.DefaultCurrency);
+            tax.Amount = new PriceRaw((double)taxDetail.tax, Services.Currencies.GetDefaultCurrency());
             tax.CalculateVat = true; //AddVAT;
 
             return tax;

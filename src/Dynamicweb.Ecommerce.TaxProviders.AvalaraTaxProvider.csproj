@@ -20,11 +20,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalara.AvaTax" Version="21.8.0" />
-    <PackageReference Include="Dynamicweb" Version="9.10.32" />
-    <PackageReference Include="Dynamicweb.Data" Version="3.0.2" />
-    <PackageReference Include="Dynamicweb.Ecommerce" Version="1.10.104" />
-    <PackageReference Include="Dynamicweb.Environment" Version="4.0.6" />
-    <PackageReference Include="Dynamicweb.Extensibility" Version="4.0.2" />
-    <PackageReference Include="Dynamicweb.Security" Version="11.1.6" />
+    <PackageReference Include="Dynamicweb" Version="10.0.0-*" />
+    <PackageReference Include="Dynamicweb.Ecommerce" Version="10.0.0-*" />
   </ItemGroup>
 </Project>
