@@ -1,292 +1,237 @@
-﻿using Avalara.AvaTax.RestClient;
-using Dynamicweb.Ecommerce.Orders;
+﻿using Dynamicweb.Ecommerce.Orders;
 using Dynamicweb.Ecommerce.Orders.AddressValidation;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model.CreateTransactionRequest;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model.ResolveAddressResponse;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Service;
 using Dynamicweb.Extensibility.AddIns;
 using Dynamicweb.Extensibility.Editors;
 using System;
-using System.IO;
+using System.Linq;
 using System.Text;
-using System.Xml.Serialization;
 
-namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
+namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider;
+
+/// <summary>
+/// Avalara address validation provider
+/// </summary>
+[AddInName("Avalara address validation provider")]
+public class AvalaraAddressValidatorProvider : AddressValidatorProvider
 {
-    /// <summary>
-    /// Avalara address validation provider
-    /// </summary>
-    [AddInName("Avalara address validation provider")]
-    public class AvalaraAddressValidatorProvider : AddressValidatorProvider
+    [AddInParameter("Account Id"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
+    public string AccountId { get; set; }
+
+    [AddInParameter("License Key"), AddInParameterEditor(typeof(TextParameterEditor), "size=80; password=true")]
+    public string LicenseKey { get; set; }
+
+    [AddInParameter("Validate Billing Address"), AddInParameterEditor(typeof(YesNoParameterEditor), "")]
+    public bool ValidateBillingAddress { get; set; }
+
+    [AddInParameter("Validate Shipping Address"), AddInParameterEditor(typeof(YesNoParameterEditor), "")]
+    public bool ValidateShippingAddress { get; set; }
+
+    [AddInParameter("Debug"), AddInParameterEditor(typeof(YesNoParameterEditor), "infoText=Create a log of the request and response from Avalara")]
+    public bool Debug { get; set; }
+
+    [AddInParameter("Test Mode"), AddInParameterEditor(typeof(YesNoParameterEditor), "infoText=Set to use sandbox (test mode) for the API requests. Uncheck when ready for production.")]
+    public bool TestMode { get; set; }
+
+    public override void Validate(Order order)
     {
-
-        #region Fields
-
-        [AddInParameter("Account"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string Account { get; set; }
-
-        [AddInParameter("License"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string License { get; set; }
-
-        [AddInParameter("Company Code"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string CompanyCode { get; set; }
-
-        [AddInParameter("Address Service Url"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string AddressServiceUrl { get; set; }
-
-        [AddInParameter("Validate Billing Address"), AddInParameterEditor(typeof(YesNoParameterEditor), ""), AddInDescription("Create a log of the request and response from UPS")]
-        public bool ValidateBillingAddress { get; set; }
-
-        [AddInParameter("Validate Shipping Address"), AddInParameterEditor(typeof(YesNoParameterEditor), ""), AddInDescription("Create a log of the request and response from UPS")]
-        public bool ValidateShippingAddress { get; set; }
-
-        [AddInParameter("Debug"), AddInParameterEditor(typeof(YesNoParameterEditor), ""), AddInDescription("Create a log of the request and response from UPS")]
-        public bool Debug { get; set; }
-        #endregion
-
-        public override void Validate(Order order)
+        if (ValidateBillingAddress)
         {
-            var service = PrepareAddressSvc();
+            AddressLocationInfo billingAddress = GetBillingAddress(order);
+            var addressValidatorResult = new AddressValidatorResult(ValidatorId, AddressType.Billing);
 
-            if (ValidateBillingAddress)
-            {
-                var billingAddress = GetBillingAddress(order);
-                var addressValidatorResult = new AddressValidatorResult(ValidatorId, AddressType.Billing);
-
-                try
-                {
-                    if (string.IsNullOrEmpty(billingAddress.postalCode) && string.IsNullOrEmpty(billingAddress.line1))
-                    {
-                        addressValidatorResult.IsError = true;
-                        addressValidatorResult.ErrorMessage = "Insufficient address information";
-                    }
-                    else
-                    {
-                        var validateResult = ValidateAddress(service, billingAddress, AddressType.Billing);
-
-                        if (validateResult.messages is null)
-                        {
-                            var validAddress = validateResult.validatedAddresses[0];
-                            addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine1, order.CustomerAddress, validAddress.line1);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine2, order.CustomerAddress2, validAddress.line2);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.City, order.CustomerCity, validAddress.city);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.Region, order.CustomerRegion, validAddress.region);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.ZipCode, order.CustomerZip, validAddress.postalCode);
-                        }
-                        else
-                        {
-                            addressValidatorResult.IsError = true;
-                            addressValidatorResult.ErrorMessage = GetErrorMessage(validateResult);
-                        }
-                    }
-                }
-                catch (Exception exception)
-                {
-                    addressValidatorResult.IsError = true;
-                    addressValidatorResult.ErrorMessage = "AvaTax threw an exception while validating address: " + exception.Message;
-                }
-
-                if (addressValidatorResult.IsError || addressValidatorResult.AddressFields.Count > 0)
-                {
-                    order.AddressValidatorResults.Add(addressValidatorResult);
-                }
-            }
-
-            if (ValidateShippingAddress)
-            {
-                var deliveryAddress = GetDeliveryAddress(order);
-                var addressValidatorResult = new AddressValidatorResult(ValidatorId, AddressType.Delivery);
-
-                try
-                {
-                    if (string.IsNullOrEmpty(deliveryAddress.postalCode) && string.IsNullOrEmpty(deliveryAddress.line1))
-                    {
-                        addressValidatorResult.IsError = true;
-                        addressValidatorResult.ErrorMessage = "Insufficient address information";
-                    }
-                    else
-                    {
-                        var validateResult = ValidateAddress(service, deliveryAddress, AddressType.Delivery);
-
-                        if (validateResult.messages is null)
-                        {
-                            var validAddress = validateResult.validatedAddresses[0];
-                            addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine1, order.DeliveryAddress, validAddress.line1);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine2, order.DeliveryAddress2, validAddress.line2);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.City, order.DeliveryCity, validAddress.city);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.Region, order.DeliveryRegion, validAddress.region);
-                            addressValidatorResult.CheckAddressField(AddressFieldType.ZipCode, order.DeliveryZip, validAddress.postalCode);
-                        }
-                        else
-                        {
-                            addressValidatorResult.IsError = true;
-                            addressValidatorResult.ErrorMessage = GetErrorMessage(validateResult);
-                        }
-                    }
-                }
-                catch (Exception exception)
-                {
-                    addressValidatorResult.IsError = true;
-                    addressValidatorResult.ErrorMessage = "AvaTax threw an exception while validating address: " + exception.Message;
-                }
-
-                if (addressValidatorResult.IsError || addressValidatorResult.AddressFields.Count > 0)
-                {
-                    order.AddressValidatorResults.Add(addressValidatorResult);
-                }
-            }
-
-        }
-
-        #region private functions
-
-        private AddressResolutionModel ValidateAddress(AvaTaxClient addressService, AddressLocationInfo address, AddressType addressType)
-        {
-            var validateResult = CheckIsAddressCached(address, addressType);
-
-            if (validateResult == null)
-            {
-                validateResult = addressService.ResolveAddress(address.line1, address.line2, null, address.city, address.region, address.postalCode, address.country, TextCase.Mixed);
-                
-                if (Debug)
-                {
-                    SaveAvaTaxLog(validateResult);
-                }
-
-                CacheRateRequest(address, addressType, validateResult);
-            }
-
-            return validateResult;
-        }
-        private AvaTaxClient PrepareAddressSvc()
-        {
-            return new AvaTaxClient("Dynamicweb AvaTax", "1.0", "Dynamicweb 9.0", new Uri(AddressServiceUrl)).WithSecurity(Account, License);
-        }
-
-        #region Cache address validator request
-
-        private static string AddressValidatorCacheKey(int validatorId, AddressType addressType)
-        {
-            return string.Format("AddressServiceRequest_{0}_{1}", validatorId, addressType);
-        }
-
-        private AddressResolutionModel CheckIsAddressCached(AddressLocationInfo address, AddressType addressType)
-        {
-            AddressResolutionModel validateResult = null;
-
-            if ((Context.Current.Session[AddressValidatorCacheKey(ValidatorId, addressType)] != null))
-            {
-                var cachedRequest = (ValidateCache)Context.Current.Session[AddressValidatorCacheKey(ValidatorId, addressType)];
-
-                if (address.country == cachedRequest.Address.country &&
-                    address.region == cachedRequest.Address.region &&
-                    address.postalCode == cachedRequest.Address.postalCode &&
-                    address.line1 == cachedRequest.Address.line1 &&
-                    address.line2 == cachedRequest.Address.line2 &&
-                    address.line3 == cachedRequest.Address.line3)
-                {
-                    validateResult = cachedRequest.ValidateResult;
-                }
-            }
-
-            return validateResult;
-        }
-
-        private void CacheRateRequest(AddressLocationInfo address, AddressType addressType, AddressResolutionModel validateResult)
-        {
-            Context.Current.Session[AddressValidatorCacheKey(ValidatorId, addressType)] = new ValidateCache
-            {
-                Address = address,
-                ValidateResult = validateResult
-            };
-        }
-
-        private class ValidateCache
-        {
-            public AddressLocationInfo Address;
-            public AddressResolutionModel ValidateResult;
-        }
-
-        #endregion
-
-        #endregion
-
-        #region public static functions
-
-        public static AddressLocationInfo GetBillingAddress(Order order)
-        {
-            return new AddressLocationInfo
-            {
-                line1 = order.CustomerAddress,
-                line2 = order.CustomerAddress2,
-                city = order.CustomerCity,
-                region = order.CustomerRegion,
-                postalCode = order.CustomerZip,
-                country = order.CustomerCountryCode
-            };
-        }
-
-        public static AddressLocationInfo GetDeliveryAddress(Order order)
-        {
-            return new AddressLocationInfo
-            {
-                line1 = order.DeliveryAddress,
-                line2 = order.DeliveryAddress2,
-                city = order.DeliveryCity,
-                region = order.DeliveryRegion,
-                postalCode = order.DeliveryZip,
-                country = order.DeliveryCountryCode
-            };
-        }
-
-        public static AddressLocationInfo GetOriginAddress(AvalaraTaxProvider taxProvider)
-        {
-            return new AddressLocationInfo
-            {
-                line1 = taxProvider.StreetAddress,
-                line2 = taxProvider.StreetAddress2,
-                city = taxProvider.City,
-                region = taxProvider.Region,
-                postalCode = taxProvider.PostalCode,
-                country = taxProvider.Country
-            };
-        }
-
-        #endregion
-
-        #region SaveAvaTaxLog
-
-        private string GetErrorMessage(AddressResolutionModel validateResult)
-        {
-            var errMessages = new StringBuilder();
-
-            if (validateResult.messages?.Count > 0)
-            {
-                foreach (var message in validateResult.messages)
-                {
-                    errMessages.AppendLine($"Details: {message.details}");
-                    errMessages.AppendLine($"RefersTo: {message.refersTo}");
-                    errMessages.AppendLine($"Severity: {message.severity}");
-                    errMessages.AppendLine($"Source: {message.source}");
-                    errMessages.AppendLine($"Summary: {message.summary}");
-                }
-            }
-
-            return errMessages.ToString();
-        }
-
-        private void SaveAvaTaxLog(AddressResolutionModel validateRequest)
-        {
             try
             {
-                var serializer = new XmlSerializer(typeof(AddressResolutionModel));
-                var writer = new StringWriter();
-                serializer.Serialize(writer, validateRequest);
+                if (string.IsNullOrEmpty(billingAddress.PostalCode) && string.IsNullOrEmpty(billingAddress.Line1))
+                {
+                    addressValidatorResult.IsError = true;
+                    addressValidatorResult.ErrorMessage = "Insufficient address information";
+                }
+                else
+                {
+                    ResolveAddressResponse validateResult = ValidateAddress(billingAddress, AddressType.Billing);
 
-                SaveLog(writer.ToString());
+                    if (validateResult.Messages is null && validateResult.ValidatedAddresses.Any())
+                    {
+                        ValidatedAddressInfo validAddress = validateResult.ValidatedAddresses.FirstOrDefault();
+                        addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine1, order.CustomerAddress ?? "", validAddress.Line1 ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine2, order.CustomerAddress2 ?? "", validAddress.Line2 ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.City, order.CustomerCity ?? "", validAddress.City ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.Region, order.CustomerRegion ?? "", validAddress.Region ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.ZipCode, order.CustomerZip ?? "", validAddress.PostalCode ?? "");
+                    }
+                    else
+                    {
+                        addressValidatorResult.IsError = true;
+                        addressValidatorResult.ErrorMessage = GetErrorMessage(validateResult);
+                    }
+                }
             }
-            catch (Exception err)
+            catch (Exception exception)
             {
-                SaveLog(err.ToString());
+                addressValidatorResult.IsError = true;
+                addressValidatorResult.ErrorMessage = "AvaTax threw an exception while validating address: " + exception.Message;
+            }
+
+            if (addressValidatorResult.IsError || addressValidatorResult.AddressFields.Count > 0)
+                order.AddressValidatorResults.Add(addressValidatorResult);
+        }
+
+        if (ValidateShippingAddress)
+        {
+            AddressLocationInfo deliveryAddress = GetDeliveryAddress(order);
+            var addressValidatorResult = new AddressValidatorResult(ValidatorId, AddressType.Delivery);
+
+            try
+            {
+                if (string.IsNullOrEmpty(deliveryAddress.PostalCode) && string.IsNullOrEmpty(deliveryAddress.Line1))
+                {
+                    addressValidatorResult.IsError = true;
+                    addressValidatorResult.ErrorMessage = "Insufficient address information";
+                }
+                else
+                {
+                    ResolveAddressResponse validateResult = ValidateAddress(deliveryAddress, AddressType.Delivery);
+
+                    if (validateResult.Messages is null && validateResult.ValidatedAddresses.Any())
+                    {
+                        var validAddress = validateResult.ValidatedAddresses.FirstOrDefault();
+                        addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine1, order.DeliveryAddress ?? "", validAddress.Line1 ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.AddressLine2, order.DeliveryAddress2 ?? "", validAddress.Line2 ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.City, order.DeliveryCity ?? "", validAddress.City ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.Region, order.DeliveryRegion ?? "", validAddress.Region ?? "");
+                        addressValidatorResult.CheckAddressField(AddressFieldType.ZipCode, order.DeliveryZip ?? "", validAddress.PostalCode ?? "");
+                    }
+                    else
+                    {
+                        addressValidatorResult.IsError = true;
+                        addressValidatorResult.ErrorMessage = GetErrorMessage(validateResult);
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                addressValidatorResult.IsError = true;
+                addressValidatorResult.ErrorMessage = "AvaTax threw an exception while validating address: " + exception.Message;
+            }
+
+            if (addressValidatorResult.IsError || addressValidatorResult.AddressFields.Count > 0)
+            {
+                order.AddressValidatorResults.Add(addressValidatorResult);
             }
         }
-        #endregion
+
+    }
+
+    private ResolveAddressResponse ValidateAddress(AddressLocationInfo address, AddressType addressType)
+    {
+        var validateResult = CheckIsAddressCached(address, addressType);
+
+        if (validateResult is null)
+        {
+            var service = new AvalaraService
+            {
+                AccountId = AccountId,
+                LicenseKey = LicenseKey,
+                TestMode = TestMode,
+                DebugLog = Debug
+            };
+            validateResult = service.ResolveAddress(address);
+
+            CacheRateRequest(address, addressType, validateResult);
+        }
+
+        return validateResult;
+    }
+
+    private static string AddressValidatorCacheKey(int validatorId, AddressType addressType)
+        => $"AddressServiceRequest_{validatorId}_{addressType}";
+
+    private ResolveAddressResponse CheckIsAddressCached(AddressLocationInfo address, AddressType addressType)
+    {
+        ResolveAddressResponse validateResult = null;
+
+        if (Context.Current.Session[AddressValidatorCacheKey(ValidatorId, addressType)] is not null)
+        {
+            var cachedRequest = (ValidateCache)Context.Current.Session[AddressValidatorCacheKey(ValidatorId, addressType)];
+
+            if (string.Equals(address.Country, cachedRequest.Address.Country, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(address.Region, cachedRequest.Address.Region, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(address.PostalCode, cachedRequest.Address.PostalCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(address.Line1, cachedRequest.Address.Line1, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(address.Line2, cachedRequest.Address.Line2, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(address.Line3, cachedRequest.Address.Line3, StringComparison.OrdinalIgnoreCase))
+            {
+                validateResult = cachedRequest.ValidateResult;
+            }
+        }
+
+        return validateResult;
+    }
+
+    private void CacheRateRequest(AddressLocationInfo address, AddressType addressType, ResolveAddressResponse validateResult)
+    {
+        Context.Current.Session[AddressValidatorCacheKey(ValidatorId, addressType)] = new ValidateCache
+        {
+            Address = address,
+            ValidateResult = validateResult
+        };
+    }
+
+    private class ValidateCache
+    {
+        public AddressLocationInfo Address;
+        public ResolveAddressResponse ValidateResult;
+    }
+
+    internal static AddressLocationInfo GetBillingAddress(Order order) => new()
+    {
+        Line1 = order.CustomerAddress,
+        Line2 = order.CustomerAddress2,
+        City = order.CustomerCity,
+        Region = order.CustomerRegion,
+        PostalCode = order.CustomerZip,
+        Country = order.CustomerCountryCode
+    };
+
+    internal static AddressLocationInfo GetDeliveryAddress(Order order) => new()
+    {
+        Line1 = order.DeliveryAddress,
+        Line2 = order.DeliveryAddress2,
+        City = order.DeliveryCity,
+        Region = order.DeliveryRegion,
+        PostalCode = order.DeliveryZip,
+        Country = order.DeliveryCountryCode
+    };
+
+    internal static AddressLocationInfo GetOriginAddress(AvalaraTaxProvider taxProvider) => new()
+    {
+        Line1 = taxProvider.StreetAddress,
+        Line2 = taxProvider.StreetAddress2,
+        City = taxProvider.City,
+        Region = taxProvider.Region,
+        PostalCode = taxProvider.PostalCode,
+        Country = taxProvider.Country
+    };
+
+    private string GetErrorMessage(ResolveAddressResponse validateResult)
+    {
+        var errMessages = new StringBuilder();
+
+        if (validateResult.Messages?.Any() is true)
+        {
+            foreach (var message in validateResult.Messages)
+            {
+                errMessages.AppendLine($"Details: {message.Details}");
+                errMessages.AppendLine($"RefersTo: {message.RefersTo}");
+                errMessages.AppendLine($"Severity: {message.Severity}");
+                errMessages.AppendLine($"Source: {message.Source}");
+                errMessages.AppendLine($"Summary: {message.Summary}");
+            }
+        }
+
+        return errMessages.ToString();
     }
 }
