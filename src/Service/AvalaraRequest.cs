@@ -18,70 +18,80 @@ internal static class AvalaraRequest
 {
     public static string SendRequest(string accountId, string licenseKey, string apiUrl, CommandConfiguration configuration)
     {
-        using (var messageHandler = GetMessageHandler())
+        using var messageHandler = GetMessageHandler();
+        using var client = new HttpClient(messageHandler);
+
+        client.BaseAddress = new Uri(apiUrl);
+        client.Timeout = new TimeSpan(0, 0, 0, 90);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        string authenticationParameter = Convert.ToBase64String(Encoding.Default.GetBytes($"{accountId}:{licenseKey}"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authenticationParameter);
+
+        string apiCommand = GetCommandLink(
+            apiUrl, 
+            configuration.CommandType, 
+            configuration.OperatorId, 
+            configuration.OperatorSecondId, 
+            configuration.QueryStringParameters
+        );
+
+        Task<HttpResponseMessage> requestTask = configuration.CommandType switch
         {
-            using (var client = new HttpClient(messageHandler))
+            //GET
+            ApiCommand.ResolveAddress => client.GetAsync(apiCommand),
+            //POST
+            ApiCommand.CreateTransaction or
+            ApiCommand.VoidTransaction => client.PostAsync(apiCommand, GetStringContent(configuration)),
+            _ => throw new NotImplementedException($"Unknown operation was used. The operation code: {configuration.CommandType}.")
+        };
+
+        try
+        {
+            using HttpResponseMessage response = requestTask.GetAwaiter().GetResult();
+
+            string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (configuration.DebugLog)
             {
-                client.BaseAddress = new Uri(apiUrl);
-                client.Timeout = new TimeSpan(0, 0, 0, 90);
-                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                var logText = new StringBuilder("Remote server response:");
+                logText.AppendLine($"HttpStatusCode = {response.StatusCode}");
+                logText.AppendLine($"HttpStatusDescription = {response.ReasonPhrase}");
+                logText.AppendLine($"Response text: {responseText}");
 
-                string authenticationParameter = Convert.ToBase64String(Encoding.Default.GetBytes($"{accountId}:{licenseKey}"));
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authenticationParameter);
-
-                string apiCommand = GetCommandLink(apiUrl, configuration.CommandType, configuration.OperatorId, configuration.OperatorSecondId, configuration.QueryStringParameters);
-                Task<HttpResponseMessage> requestTask = configuration.CommandType switch
-                {
-                    //GET
-                    ApiCommand.ResolveAddress => client.GetAsync(apiCommand),
-                    //POST
-                    ApiCommand.CreateTransaction or
-                    ApiCommand.VoidTransaction => client.PostAsync(apiCommand, GetContent()),
-                    _ => throw new NotSupportedException($"Unknown operation was used. The operation code: {configuration.CommandType}.")
-                };
-
-                try
-                {
-                    using (HttpResponseMessage response = requestTask.GetAwaiter().GetResult())
-                    {
-                        string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                        if (configuration.DebugLog)
-                        {
-                            var logText = new StringBuilder("Remote server response:");
-                            logText.AppendLine($"HttpStatusCode = {response.StatusCode}");
-                            logText.AppendLine($"HttpStatusDescription = {response.ReasonPhrase}");
-                            logText.AppendLine($"Response Text: {responseText}");
-
-                            if (configuration.CommandType is ApiCommand.ResolveAddress)
-                                LogAddressValidator(logText.ToString());
-                            else
-                                Log(logText.ToString());
-                        }
-
-                        if (!response.IsSuccessStatusCode)
-                            throw new Exception($"Unhandled exception. Operation failed: {response.ReasonPhrase}. Response text: ${responseText}");
-
-                        return responseText;
-                    }
-                }
-                catch (HttpRequestException requestException)
-                {
-                    throw new Exception($"An error occurred during Avalara request. Error code: {requestException.StatusCode}");
-                }
+                Log(logText.ToString(), false, configuration.CommandType);
             }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                string errorMessage = $"Unhandled exception. Operation failed: {response.ReasonPhrase}. Response text: ${responseText}";
+                Log(errorMessage, false, configuration.CommandType);
+
+                throw new Exception(errorMessage);
+            }
+
+            return responseText;
+        }
+        catch (HttpRequestException requestException)
+        {
+            string errorMessage = $"An error occurred during Avalara request. Error code: {requestException.StatusCode}";
+            Log(errorMessage, false, configuration.CommandType);
+            throw new Exception(errorMessage);
         }
 
         HttpMessageHandler GetMessageHandler() => new HttpClientHandler()
         {
             AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip
         };
+    }
 
-        HttpContent GetContent()
-        {
-            string content = Converter.SerializeCompact(configuration.Data);
+    private static HttpContent GetStringContent(CommandConfiguration configuration)
+    {
+        string content = Converter.SerializeCompact(configuration.Data);
 
-            return new StringContent(content, Encoding.UTF8, "application/json");
-        }
+        if (configuration.DebugLog)
+            Log($"Request data: {content}", true, configuration.CommandType);
+
+        return new StringContent(content, Encoding.UTF8, "application/json");
     }
 
     private static string GetCommandLink(string baseAddress, ApiCommand command, string operatorId, string operatorSecondId, Dictionary<string, string> queryParameters)
@@ -91,7 +101,7 @@ internal static class AvalaraRequest
             ApiCommand.CreateTransaction => GetCommandLink("transactions/create"),
             ApiCommand.ResolveAddress => GetCommandLink("addresses/resolve", queryParameters),
             ApiCommand.VoidTransaction => GetCommandLink($"companies/{operatorId}/transactions/{operatorSecondId}/void"),
-            _ => throw new NotSupportedException($"The api command is not supported. Command: {command}")
+            _ => throw new NotImplementedException($"The api command is not supported. Command: {command}")
         };
 
         string GetCommandLink(string gateway, Dictionary<string, string> queryParameters = null)
@@ -107,7 +117,19 @@ internal static class AvalaraRequest
         }
     }
 
-    private static void Log(string message)
+    private static void Log(string message, bool isRequest, ApiCommand commandType)
+    {
+        string type = isRequest ? "Request" : "Response";
+        var errorMessage = new StringBuilder($"{type} for command: '{commandType}'.");
+        errorMessage.AppendLine(message);
+
+        if (commandType is ApiCommand.ResolveAddress)
+            LogAddressValidator(message);
+        else
+            LogAvalara(message);
+    }
+
+    private static void LogAvalara(string message)
     {
         string fullName = typeof(AvalaraTaxProvider).FullName;
         LogManager.Current.GetLogger($"/eCom/TaxProvider/{fullName}").Info(message);
