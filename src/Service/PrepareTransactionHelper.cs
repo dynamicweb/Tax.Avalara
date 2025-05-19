@@ -62,7 +62,7 @@ internal sealed class PrepareTransactionHelper
         TransactionType.Adjust or TransactionType.Commit => DocumentType.SalesInvoice,
         TransactionType.Calculate => DocumentType.SalesOrder,
         TransactionType.ProductReturns => DocumentType.ReturnInvoice,
-        _ => throw new ArgumentOutOfRangeException(nameof(transactionType), $"Unknown or unsupported transaction type: {transactionType}")
+        _ => throw new NotImplementedException($"Unknown or unsupported transaction type: {transactionType}")
     };
 
     private CreateTransactionRequest InitializeBaseRequest(TransactionType transactionType)
@@ -93,13 +93,13 @@ internal sealed class PrepareTransactionHelper
         {
             if (Provider.IsTaxableTypeInternal(orderLine) || orderLine.HasType(OrderLineType.PointProduct))
             {
-                if (orderLine.Product is not null)
-                {
-                    LineItem line = GetTaxLine(orderLine, index++, request.Addresses.ShipFrom, request.Addresses.ShipTo);
-                    request.Lines.Add(line);
-                    if (orderLine.HasType(OrderLineType.PointProduct))
-                        orderDiscount += -Convert.ToDouble(orderLine.Product.GetPrice(priceContext).PriceWithoutVAT);
-                }
+                if (orderLine.Product is null)
+                    continue;
+
+                LineItem line = GetTaxLine(orderLine, index++, request.Addresses.ShipFrom, request.Addresses.ShipTo);
+                request.Lines.Add(line);
+                if (orderLine.HasType(OrderLineType.PointProduct))
+                    orderDiscount += -Convert.ToDouble(orderLine.Product.GetPrice(priceContext).PriceWithoutVAT);
             }
             else if (orderLine.HasType(OrderLineType.Discount) && string.IsNullOrEmpty(orderLine.GiftCardCode))
                 orderDiscount += Convert.ToDouble(orderLine.Price.PriceWithoutVAT);
@@ -150,18 +150,18 @@ internal sealed class PrepareTransactionHelper
 
     private void SetCustomerExemptionData(CreateTransactionRequest request)
     {
-        if (Order.CustomerAccessUserId > 0)
-        {
-            if (UserManagementServices.Users.GetUserById(Order.CustomerAccessUserId) is not User customer)
-                return;
+        if (Order.CustomerAccessUserId <= 0)
+            return;
 
-            foreach (SystemFieldValue fieldValue in customer.SystemFieldValues)
-            {
-                if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.ExemptionNumberFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
-                    request.ExemptionNumber = fieldValue.Value.ToString();
-                else if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.EntityUseCodeFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
-                    request.CustomerUsageType = fieldValue.Value.ToString();
-            }
+        if (UserManagementServices.Users.GetUserById(Order.CustomerAccessUserId) is not User customer)
+            return;
+
+        foreach (SystemFieldValue fieldValue in customer.SystemFieldValues)
+        {
+            if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.ExemptionNumberFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
+                request.ExemptionNumber = fieldValue.Value.ToString();
+            else if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.EntityUseCodeFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
+                request.CustomerUsageType = fieldValue.Value.ToString();
         }
     }
 
@@ -248,7 +248,7 @@ internal sealed class PrepareTransactionHelper
                 nameof(CustomerCodeSource.AccessUserExternalId) => Order.CustomerAccessUserId > 0
                     ? UserManagementServices.Users.GetUserById(Order.CustomerAccessUserId)?.ExternalID ?? ""
                     : string.Empty,
-                _ => throw new Exception($"Unsupported option is used: {Provider.GetCustomerCodeFrom}")
+                _ => throw new NotImplementedException($"Unsupported option is used: {Provider.GetCustomerCodeFrom}")
             };
         }
 
