@@ -1,26 +1,22 @@
-﻿using Avalara.AvaTax.RestClient;
-using Dynamicweb.Ecommerce.Orders;
+﻿using Dynamicweb.Ecommerce.Orders;
 using Dynamicweb.Ecommerce.Prices;
 using Dynamicweb.Ecommerce.Products;
 using Dynamicweb.Ecommerce.Products.Taxes;
-using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model;
-using Dynamicweb.Extensibility;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model.CreateTransactionResponse;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model.VoidTransaction;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Notifications;
+using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Service;
 using Dynamicweb.Extensibility.AddIns;
 using Dynamicweb.Extensibility.Editors;
 using Dynamicweb.Extensibility.Notifications;
 using Dynamicweb.Security.UserManagement;
 using Dynamicweb.Security.UserManagement.Common.CustomFields;
 using Dynamicweb.Security.UserManagement.Common.SystemFields;
+using Microsoft.CodeAnalysis;
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
-using System.Xml.Serialization;
 
 namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
 {
@@ -28,51 +24,29 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
     /// Avalara tax provider
     /// </summary>
     [AddInName("Avalara tax provider")]
-    public class AvalaraTaxProvider : TaxProvider, IDropDownOptions
+    public class AvalaraTaxProvider : TaxProvider, IParameterOptions
     {
         /// <summary>
         /// Gets the names for ItemCode and TaxCode field.
         /// </summary>
-        private const string ItemCodeFieldName = "ItemCode";
-        private const string TaxCodeFieldName = "TaxCode";
-        private const string ExemptionNumberFieldName = "ExemptionNumber";
-        private const string EntityUseCodeFieldName = "EntityUseCode";
+        internal const string ItemCodeFieldName = "ItemCode";
+        internal const string TaxCodeFieldName = "TaxCode";
+        internal const string ExemptionNumberFieldName = "ExemptionNumber";
+        internal const string EntityUseCodeFieldName = "EntityUseCode";
         public const string BeforeTaxCalculation = "Ecom7CartBeforeTaxCalculation";
         public const string BeforeTaxCommit = "Ecom7CartBeforeTaxCommit";
         public const string OnGetCustomerCode = "Ecom7CartAvalaraOnGetCustomerCode";
+
         private OrderDebuggingInfoService _orderDebuggingInfoService = new OrderDebuggingInfoService();
 
-        private enum TransactionType
-        {
-            Calculate,
-            Commit,
-            Cancel,
-            Adjust,
-            ProductReturns
-        }
+        [AddInParameter("Account Id"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
+        public string AccountId { get; set; }
 
-        private enum CustomerCodeSource
-        {
-            OrderCustomerAccessUserId,
-            OrderCustomerNumber,
-            AccessUserExternalId
-        }
-
-        private Order originalOrder = null;
-
-        #region Fields
-
-        [AddInParameter("Account"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string Account { get; set; }
-
-        [AddInParameter("License"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string License { get; set; }
+        [AddInParameter("License Key"), AddInParameterEditor(typeof(TextParameterEditor), "size=80; password=true")]
+        public string LicenseKey { get; set; }
 
         [AddInParameter("Company Code"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
         public string CompanyCode { get; set; }
-
-        [AddInParameter("Tax Service Url"), AddInParameterEditor(typeof(TextParameterEditor), "size=80")]
-        public string TaxServiceUrl { get; set; }
 
         [AddInParameter("Origination Street Address"), AddInParameterEditor(typeof(TextParameterEditor), "")]
         public string StreetAddress { get; set; }
@@ -89,44 +63,36 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         [AddInParameter("Origination Zip Code"), AddInParameterEditor(typeof(TextParameterEditor), "")]
         public string PostalCode { get; set; }
 
-        public string Country = "US";
-
         [AddInParameter("Tax Code for Shipping"), AddInParameterEditor(typeof(TextParameterEditor), "")]
-        public string TaxCodeShipping { get; set; }
-
-        [AddInParameter("Boundary level"), AddInParameterEditor(typeof(DropDownParameterEditor), "none=false; SortBy=Value")]
-        public string BoundaryLevel { get; set; }
+        public string TaxCodeShipping { get; set; } = "FR020100";
 
         [AddInParameter("Get customer code from"), AddInParameterEditor(typeof(DropDownParameterEditor), "none=false; SortBy=Value")]
-        public string GetCustomerCodeFrom { get; set; }
+        public string GetCustomerCodeFrom { get; set; } = nameof(CustomerCodeSource.OrderCustomerAccessUserId);
 
         [AddInParameter("Enable Commit"), AddInParameterEditor(typeof(YesNoParameterEditor), "")]
-        public bool EnableCommit { get; set; }
+        public bool EnableCommit { get; set; } = true;
 
         [AddInParameter("Don't use in product catalog"), AddInParameterEditor(typeof(YesNoParameterEditor), "")]
         public bool DontUseInProductCatalog { get; set; }
 
-        [AddInParameter("Don’t calculate taxes if {Exemption number} is set"), AddInParameterEditor(typeof(YesNoParameterEditor), "")]
-        public Boolean DontUseIfExemptionNumberIsSet { get; set; }
+        [AddInParameter("Don’t calculate taxes if Exemption number is set"), AddInParameterEditor(typeof(YesNoParameterEditor), "")]
+        public bool DontUseIfExemptionNumberIsSet { get; set; }
 
-        [AddInParameter("Debug"), AddInParameterEditor(typeof(YesNoParameterEditor), ""), AddInDescription("Create a log of the request and response from UPS")]
+        [AddInParameter("Debug"), AddInParameterEditor(typeof(YesNoParameterEditor), ""), AddInDescription("Create a log of the request and response from Avalara")]
         public bool Debug { get; set; }
 
-        #endregion
+        [AddInParameter("Test mode"), AddInParameterEditor(typeof(YesNoParameterEditor), "infoText=Set to use sandbox (test mode) for the API requests. Uncheck when ready for production.")]
+        public bool TestMode { get; set; }
 
-        /// <summary>
-        /// Default constructor
-        /// </summary>
-        public AvalaraTaxProvider()
+        public string Country = "US";
+
+        private AvalaraService GetService() => new()
         {
-            if (Context.Current == null || Context.Current.Request.Form.Count == 0)
-            {
-                EnableCommit = true;
-                BoundaryLevel = "Zip9";
-                TaxCodeShipping = "FR020100"; // Avalara System TaxCode for SHIPPING
-            }
-            GetCustomerCodeFrom = nameof(CustomerCodeSource.OrderCustomerAccessUserId);
-        }
+            AccountId = AccountId,
+            LicenseKey = LicenseKey,
+            TestMode = TestMode,
+            DebugLog = Debug
+        };
 
         /// <summary>
         /// Adds order lines to order
@@ -139,32 +105,19 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
             NotificationManager.Notify(BeforeTaxCalculation, notificationArgs);
 
             if (notificationArgs.Cancel)
-            {
                 return;
-            }
 
             if (!IsTaxableOrder(order))
-            {
                 return;
-            }
 
             try
             {
-                var taxResult = GetTaxes(order, TransactionType.Calculate);
+                CreateTransactionResponse taxResult = GetService().CreateCalculateTransaction(order, this);
 
-                if (Debug)
-                {
-                    SaveAvaTaxLog(taxResult);
-                }
-
-                if (taxResult.messages?.Count > 0)
-                {
+                if (taxResult.Messages?.Any() is true)
                     order.TaxProviderErrors.Add(GetErrorMessage(taxResult));
-                }
                 else
-                {
                     GetOrderLinesFromTaxResult(order, taxResult);
-                }
             }
             catch (Exception err)
             {
@@ -184,41 +137,30 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
             NotificationManager.Notify(BeforeTaxCommit, notificationArgs);
 
             if (notificationArgs.Cancel)
-            {
                 return;
-            }
 
             if (!order.Complete || !IsTaxableOrder(order))
-            {
                 return;
-            }
 
             try
             {
-                var taxResult = GetTaxes(order, TransactionType.Commit);
+                CreateTransactionResponse taxResult = GetService().CreateCommitTransaction(order, this);
 
-                if (Debug)
-                {
-                    SaveAvaTaxLog(taxResult);
-                }
-                string message = string.Format("Commited with ResultCode ({0})", taxResult.code);
-                if (taxResult.messages is null)
+                string message = $"Commited with ResultCode ({taxResult.Code})";
+                if (taxResult.Messages is null)
                 {
                     if (EnableCommit)
                     {
-                        message += string.Format("; TransactionId #{0}", taxResult.code);
-                        order.TaxTransactionNumber = taxResult.code;
+                        message += $"; TransactionId #{taxResult.Code}";
+                        order.TaxTransactionNumber = taxResult.Code;
                         Services.Orders.Save(order);
                     }
                     else
-                    {
-                        message += string.Format("; Commit is disabled");
-                    }
+                        message += "; Commit is disabled";
                 }
                 else
-                {
                     message += GetErrorMessage(taxResult);
-                }
+
                 new OrderDebuggingInfoService().Save(order, message, "AvaTax");
             }
             catch (Exception err)
@@ -229,408 +171,163 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
 
         #region get taxes
 
-        private TransactionModel GetTaxes(Order order, TransactionType transactionType)
-        {
-            var taxRequest = PrepareTaxRequest(order, transactionType).Create();
-
-            if (Debug)
-            {
-                SaveAvaTaxLog(taxRequest);
-            }
-
-            return taxRequest;
-        }
-
-        private AvaTaxClient PrepareTaxSvc()
-        {
-            return new AvaTaxClient("Dynamicweb AvaTax", "1.0", "Dynamicweb 9.0", new Uri(TaxServiceUrl)).WithSecurity(Account, License);
-        }
-        private T PostToAvalara<T>(string method, string jsonObject)
-        {
-            string url = $"{TaxServiceUrl}/api/v2/";
-            using (var client = new HttpClient())
-            {
-                string authenticationScheme = "Basic";
-                string authenticationParameter = Convert.ToBase64String(Encoding.Default.GetBytes($"{Account}:{License}"));
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(authenticationScheme, authenticationParameter);
-                var content = new StringContent(jsonObject);
-                content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json");
-                using (var response = client.PostAsync(url + method, content).GetAwaiter().GetResult())
-                {
-                    string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                    return JsonSerializer.Deserialize<T>(responseText);
-                }
-            }
-        }
-
-        /// <remarks>
-        /// "FR020100" - Avalara System TaxCode for SHIPPING
-        /// </remarks>
-        private TransactionBuilder PrepareTaxRequest(Order order, TransactionType transactionType)
-        {
-            TransactionBuilder result;
-            if (transactionType == TransactionType.Commit)
-            {
-                result = new TransactionBuilder(PrepareTaxSvc(), CompanyCode, DocumentType.SalesInvoice, GetCustomerCode(order));
-                result.WithCommit();
-                result.WithDate(order.Date);
-                result.WithReferenceCode(order.Id);
-            }
-            else if (transactionType == TransactionType.Calculate)
-            {
-                result = new TransactionBuilder(PrepareTaxSvc(), CompanyCode, DocumentType.SalesOrder, GetCustomerCode(order));
-                result.WithDate(DateTime.Now);
-                result.WithReferenceCode(order.Id);
-            }
-            else if (transactionType == TransactionType.Adjust)
-            {
-                result = new TransactionBuilder(PrepareTaxSvc(), CompanyCode, DocumentType.SalesInvoice, GetCustomerCode(order));
-                if (!string.IsNullOrEmpty(order.TaxTransactionNumber) && EnableCommit)
-                {
-                    result.WithCommit();
-                }
-                result.WithDate(DateTime.Now);
-                result.WithTaxOverride(TaxOverrideType.TaxDate, "Adjust", 0, order.Date);
-                result.WithReferenceCode(order.Id);
-            }
-            else if (transactionType == TransactionType.ProductReturns)
-            {
-                result = new TransactionBuilder(PrepareTaxSvc(), CompanyCode, DocumentType.ReturnInvoice, GetCustomerCode(order));
-                if (!string.IsNullOrEmpty(originalOrder.TaxTransactionNumber) && EnableCommit)
-                {
-                    result.WithCommit();
-                }
-                result.WithDate(order.Date);
-                result.WithReferenceCode(originalOrder.Id);
-                result.WithTaxOverride(TaxOverrideType.TaxDate, "Return", 0, originalOrder.Date);
-            }
-            else
-            {
-                throw new Exception(string.Format("Unknown transaction type: {0}", transactionType));
-            }
-
-            result.WithCurrencyCode(order.CurrencyCode);
-
-            if (order.CustomerAccessUserId != 0)
-            {
-                var customer = User.GetUserByID(order.CustomerAccessUserId);
-
-                foreach (var fieldValue in customer.SystemFieldValues)
-                {
-                    if (fieldValue.SystemField.Name == ExemptionNumberFieldName && fieldValue.Value != null)
-                    {
-                        result.WithExemptionNumber(fieldValue.Value.ToString());
-                    }
-                    else if (fieldValue.SystemField.Name == EntityUseCodeFieldName && fieldValue.Value != null)
-                    {
-                        result.WithUsageType(fieldValue.Value.ToString());
-                    }
-                }
-            }
-
-            AddressLocationInfo originAddress = AvalaraAddressValidatorProvider.GetOriginAddress(this);
-            result.WithAddress(TransactionAddressType.ShipFrom, originAddress.line1, originAddress.line2, null, originAddress.city, originAddress.region, originAddress.postalCode, originAddress.country);
-
-            var destinationAddress = new AddressLocationInfo();
-            if (!string.IsNullOrEmpty(order.DeliveryZip))
-            {
-                destinationAddress = AvalaraAddressValidatorProvider.GetDeliveryAddress(order);
-            }
-            else
-            {
-                destinationAddress = AvalaraAddressValidatorProvider.GetBillingAddress(order);
-            }
-            if (string.IsNullOrEmpty(destinationAddress.postalCode))
-            {
-                throw new Exception("Make sure that the address is provided with a zip code.");
-            }
-            result.WithAddress(TransactionAddressType.ShipTo, destinationAddress.line1, destinationAddress.line2, null, destinationAddress.city, destinationAddress.region, destinationAddress.postalCode, destinationAddress.country);
-
-            int index = 0;
-            decimal orderDiscount = 0M;
-            CreateTransactionModel transactionModel = result.GetCreateTransactionModel();
-            var priceContext = new PriceContext(order.Currency, order.VatCountry);
-
-            foreach (var orderLine in order.OrderLines)
-            {
-                if (IsTaxableType(orderLine) || orderLine.HasType(OrderLineType.PointProduct))
-                {
-                    if (orderLine.Product != null)
-                    {
-                        var line = GetTaxLine(order, orderLine, index++, destinationAddress, originAddress);
-                        transactionModel.lines.Add(line);
-                        if (orderLine.HasType(OrderLineType.PointProduct))
-                        {
-                            orderDiscount += (-Convert.ToDecimal(orderLine.Product.GetPrice(priceContext).PriceWithoutVAT));
-                        }
-                    }
-                }
-                else if (orderLine.HasType(OrderLineType.Discount) && string.IsNullOrEmpty(orderLine.GiftCardCode))
-                {
-                    orderDiscount += Convert.ToDecimal(orderLine.Price.PriceWithoutVAT);
-                }
-            }
-
-            orderDiscount = Math.Abs(orderDiscount);
-            if (orderDiscount > 0M)
-            {
-                foreach (LineItemModel line in transactionModel.lines)
-                {
-                    if (line.taxCode != TaxCodeShipping)
-                    {
-                        line.discounted = true;
-                    }
-                }
-                result.WithDiscountAmount(orderDiscount);
-            }
-            var shippingLine = GetShippingTaxLine(order, destinationAddress, originAddress);
-
-            if (shippingLine.amount > 0)
-            {
-                transactionModel.lines.Add(shippingLine);
-            }
-
-            return result;
-        }
-
-        private string GetCustomerCode(Order order)
-        {
-            var notificationArgs = new OnGetCustomerCodeArgs { Order = order };
-            NotificationManager.Notify(OnGetCustomerCode, notificationArgs);
-            if (!string.IsNullOrEmpty(notificationArgs.CustomerCode))
-            {
-                return notificationArgs.CustomerCode;
-            }
-
-            if (!string.IsNullOrEmpty(GetCustomerCodeFrom))
-            {
-                switch (GetCustomerCodeFrom)
-                {
-                    case nameof(CustomerCodeSource.OrderCustomerAccessUserId):
-                        return order.CustomerAccessUserId.ToString();
-                    case nameof(CustomerCodeSource.OrderCustomerNumber):
-                        return order.CustomerNumber;
-                    case nameof(CustomerCodeSource.AccessUserExternalId):
-                        if (order.CustomerAccessUserId > 0)
-                        {
-                            var customer = User.GetUserByID(order.CustomerAccessUserId);
-                            return customer != null ? customer.ExternalID : string.Empty;
-                        }
-                        return string.Empty;
-                    default:
-                        throw new Exception("Unsupported option: " + GetCustomerCodeFrom);
-                }
-            }
-            return order.CustomerAccessUserId.ToString();
-        }
-
-        private LineItemModel GetTaxLine(Order order, OrderLine orderLine, int index, AddressLocationInfo destinationAddress, AddressLocationInfo originAddress)
-        {
-            LineItemModel line = new LineItemModel();
-            var priceContext = new PriceContext(order.Currency, order.VatCountry);
-            var price = (orderLine.HasType(OrderLineType.PointProduct)) ? orderLine.Product.GetPrice(priceContext) : GetProductPriceWithoutDiscounts(orderLine);
-            line.amount = Convert.ToDecimal(price.PriceWithoutVAT);
-            line.description = orderLine.ProductName;
-            line.addresses = new AddressesModel
-            {
-                shipTo = destinationAddress,
-                shipFrom = originAddress
-            };
-
-            line.number = string.IsNullOrEmpty(orderLine.Id) ? index.ToString() : orderLine.Id;
-            line.quantity = Math.Abs((decimal)orderLine.Quantity);
-            try
-            {
-                line.itemCode = Services.Products.GetProductFieldValue(orderLine.Product, ItemCodeFieldName).ToString();
-                line.taxCode = Services.Products.GetProductFieldValue(orderLine.Product, TaxCodeFieldName).ToString();
-            }
-            catch (ArgumentException)
-            {
-                VerifyCustomFields();
-            }
-
-            return line;
-        }
-
-        /// <remarks>
-		/// "FR020100" - Avalara System TaxCode for SHIPPING
-		/// </remarks>
-		private LineItemModel GetShippingTaxLine(Order order, AddressLocationInfo destinationAddress, AddressLocationInfo originAddress)
-        {
-            LineItemModel line = new LineItemModel();
-            line.amount = Convert.ToDecimal(order.ShippingFee.PriceWithoutVAT);
-
-            line.description = "SHIPPING"; 
-            line.addresses = new AddressesModel
-            {
-                shipTo = destinationAddress,
-                shipFrom = originAddress
-            };
-
-            line.number = ShippingCode;
-            line.taxCode = TaxCodeShipping;
-
-            return line;
-        }
-
-        private void GetOrderLinesFromTaxResult(Order order, TransactionModel taxResult)
+        private void GetOrderLinesFromTaxResult(Order order, CreateTransactionResponse taxResult)
         {
             var newOrderLines = new OrderLineCollection(order);
 
-            if (taxResult.totalTax != 0)
+            if (taxResult.TotalTax != 0)
             {
-                foreach (var taxLine in taxResult.lines)
+                foreach (TransactionLine taxLine in taxResult.Lines)
                 {
                     var taxDetailNamesAndCount = new Dictionary<string, int>();
-                    foreach (var taxDetail in taxLine.details)
+                    foreach (TransactionLineDetail taxDetail in taxLine.Details)
                     {
-                        if (!taxDetailNamesAndCount.ContainsKey(taxDetail.taxName))
-                        {
-                            taxDetailNamesAndCount.Add(taxDetail.taxName, 1);
-                        }
+                        if (!taxDetailNamesAndCount.ContainsKey(taxDetail.TaxName))
+                            taxDetailNamesAndCount.Add(taxDetail.TaxName, 1);
                         else
-                        {
-                            taxDetailNamesAndCount[taxDetail.taxName] += 1;
-                        }
-
+                            taxDetailNamesAndCount[taxDetail.TaxName] += 1;
                     }
 
-                    foreach (var taxDetail in taxLine.details)
+                    foreach (TransactionLineDetail taxDetail in taxLine.Details)
                     {
-                        if (taxDetail.tax != 0M)
-                        {
-                            var taxOrderLine = new OrderLine(order);
-                            taxOrderLine.Date = DateTime.Now;
-                            taxOrderLine.Modified = DateTime.Now;
+                        if (taxDetail.Tax == 0)
+                            continue;
 
-                            taxOrderLine.ProductNumber = string.Format("Tax Id# {0}", taxResult.id);
-                            var taxName = taxDetail.taxName;
-                            if (taxDetailNamesAndCount.ContainsKey(taxDetail.taxName) && taxDetailNamesAndCount[taxDetail.taxName] > 1 && !string.IsNullOrEmpty(taxDetail.jurisName))
-                            {
-                                taxName += " (" + taxDetail.jurisName + ")";
-                            }
-                            taxOrderLine.ProductName = taxName;
-                            taxOrderLine.ProductVariantText = Name;
-                            taxOrderLine.Order = order;
-                            taxOrderLine.OrderId = order.Id;
-                            taxOrderLine.Quantity = 1;
+                        var taxOrderLine = new OrderLine(order);
+                        taxOrderLine.Date = DateTime.Now;
+                        taxOrderLine.Modified = DateTime.Now;
 
-                            // Info: Set price - should be before setting Type
-                            Services.OrderLines.SetUnitPrice(taxOrderLine, Convert.ToDouble(taxDetail.tax), false);
-                            if (!order.Calculate)
-                            {
-                                Services.OrderLines.SetUnitPrice(taxOrderLine, taxOrderLine.UnitPrice, true);
-                            }
+                        taxOrderLine.ProductNumber = string.Format("Tax Id# {0}", taxResult.Id);
+                        string taxName = taxDetail.TaxName;
+                        if (taxDetailNamesAndCount.ContainsKey(taxDetail.TaxName) && taxDetailNamesAndCount[taxDetail.TaxName] > 1 && !string.IsNullOrEmpty(taxDetail.JurisName))
+                            taxName += $" ({taxDetail.JurisName})";
 
-                            taxOrderLine.OrderLineType = OrderLineType.Tax;
-                            taxOrderLine.ParentLineId = taxLine.lineNumber;
+                        taxOrderLine.ProductName = taxName;
+                        taxOrderLine.ProductVariantText = Name;
+                        taxOrderLine.Order = order;
+                        taxOrderLine.OrderId = order.Id;
+                        taxOrderLine.Quantity = 1;
 
-                            newOrderLines.Add(taxOrderLine);
-                        }
+                        // Info: Set price - should be before setting Type
+                        Services.OrderLines.SetUnitPrice(taxOrderLine, Convert.ToDouble(taxDetail.Tax), false);
+                        if (!order.Calculate)
+                            Services.OrderLines.SetUnitPrice(taxOrderLine, taxOrderLine.UnitPrice, true);
+
+                        taxOrderLine.OrderLineType = OrderLineType.Tax;
+                        taxOrderLine.ParentLineId = taxLine.LineNumber;
+
+                        newOrderLines.Add(taxOrderLine);
                     }
                 }
             }
 
             foreach (var orderline in newOrderLines)
-            {
                 order.OrderLines.Add(orderline, false);
-            }
         }
 
         private bool IsTaxableOrder(Order order)
         {
-            var ret = order.OrderLines.Any(ol => (IsTaxableType(ol) || ol.HasType(OrderLineType.PointProduct)) && ol.Product != null);
+            bool hasTaxableOrderLines = order.OrderLines.Any(ol => (IsTaxableType(ol) || ol.HasType(OrderLineType.PointProduct)) && ol.Product is not null);
 
-            if (ret && DontUseIfExemptionNumberIsSet && order.CustomerAccessUserId != 0)
+            if (hasTaxableOrderLines && DontUseIfExemptionNumberIsSet && order.CustomerAccessUserId != 0)
             {
-                var customer = User.GetUserByID(order.CustomerAccessUserId);
-                var exemptionNumberField = customer.SystemFieldValues.FirstOrDefault(f => f.SystemField.Name == ExemptionNumberFieldName);
+                User customer = UserManagementServices.Users.GetUserById(order.CustomerAccessUserId);
+                SystemFieldValue exemptionNumberField = customer.SystemFieldValues.FirstOrDefault(fieldValue => fieldValue.SystemField.Name.Equals(ExemptionNumberFieldName, StringComparison.Ordinal));
 
-                if (exemptionNumberField != null && exemptionNumberField.Value != null && !string.IsNullOrEmpty(exemptionNumberField.Value.ToString()))
-                {
-                    ret = false;
-                }
+                if (!string.IsNullOrWhiteSpace(exemptionNumberField?.Value?.ToString() ?? ""))
+                    hasTaxableOrderLines = false;
             }
 
-            return ret;
+            return hasTaxableOrderLines;
         }
 
         #endregion
 
-        Hashtable IDropDownOptions.GetOptions(string name)
+        public IEnumerable<ParameterOption> GetParameterOptions(string parameterName)
         {
-            var options = new Hashtable();
-
-            switch (name)
+            try
             {
-                case "Origination State":
-                    options.Add("AL", "Alabama");
-                    options.Add("AK", "Alaska");
-                    options.Add("AZ", "Arizona");
-                    options.Add("AR", "Arkansas");
-                    options.Add("CA", "California");
-                    options.Add("CO", "Colorado");
-                    options.Add("CT", "Connecticut");
-                    options.Add("DE", "Delaware");
-                    options.Add("DC", "District of Columbia");
-                    options.Add("FL", "Florida");
-                    options.Add("GA", "Georgia");
-                    options.Add("HI", "Hawaii");
-                    options.Add("ID", "Idaho");
-                    options.Add("IL", "Illinois");
-                    options.Add("IN", "Indiana");
-                    options.Add("IA", "Iowa");
-                    options.Add("KS", "Kansas");
-                    options.Add("KY", "Kentucky");
-                    options.Add("LA", "Louisiana");
-                    options.Add("ME", "Maine");
-                    options.Add("MD", "Maryland");
-                    options.Add("MA", "Massachusetts");
-                    options.Add("MI", "Michigan");
-                    options.Add("MN", "Minnesota");
-                    options.Add("MS", "Mississippi");
-                    options.Add("MO", "Missouri");
-                    options.Add("MT", "Montana");
-                    options.Add("NE", "Nebraska");
-                    options.Add("NV", "Nevada");
-                    options.Add("NH", "New Hampshire");
-                    options.Add("NJ", "New Jersey");
-                    options.Add("NM", "New Mexico");
-                    options.Add("NY", "New York");
-                    options.Add("NC", "North Carolina");
-                    options.Add("ND", "North Dakota");
-                    options.Add("OH", "Ohio");
-                    options.Add("OK", "Oklahoma");
-                    options.Add("OR", "Oregon");
-                    options.Add("PA", "Pennsylvania");
-                    options.Add("RI", "Rhode Island");
-                    options.Add("SC", "South Carolina");
-                    options.Add("SD", "South Dakota");
-                    options.Add("TN", "Tennessee");
-                    options.Add("TX", "Texas");
-                    options.Add("UT", "Utah");
-                    options.Add("VT", "Vermont");
-                    options.Add("VA", "Virginia");
-                    options.Add("WA", "Washington");
-                    options.Add("WV", "West Virginia");
-                    options.Add("WI", "Wisconsin");
-                    options.Add("WY", "Wyoming");
+                switch (parameterName)
+                {
+                    case "Origination State":
+                        return
+                        [
+                            new("Alabama", "AL"),
+                            new("Alaska", "AK"),
+                            new("Arizona", "AZ"),
+                            new("Arkansas", "AR"),
+                            new("California", "CA"),
+                            new("Colorado", "CO"),
+                            new("Connecticut", "CT"),
+                            new("Delaware", "DE"),
+                            new("District of Columbia", "DC"),
+                            new("Florida", "FL"),
+                            new("Georgia", "GA"),
+                            new("Hawaii", "HI"),
+                            new("Idaho", "ID"),
+                            new("Illinois", "IL"),
+                            new("Indiana", "IN"),
+                            new("Iowa", "IA"),
+                            new("Kansas", "KS"),
+                            new("Kentucky", "KY"),
+                            new("Louisiana", "LA"),
+                            new("Maine", "ME"),
+                            new("Maryland", "MD"),
+                            new("Massachusetts", "MA"),
+                            new("Michigan", "MI"),
+                            new("Minnesota", "MN"),
+                            new("Mississippi", "MS"),
+                            new("Missouri", "MO"),
+                            new("Montana", "MT"),
+                            new("Nebraska", "NE"),
+                            new("Nevada", "NV"),
+                            new("New Hampshire", "NH"),
+                            new("New Jersey", "NJ"),
+                            new("New Mexico", "NM"),
+                            new("New York", "NY"),
+                            new("North Carolina", "NC"),
+                            new("North Dakota", "ND"),
+                            new("Ohio", "OH"),
+                            new("Oklahoma", "OK"),
+                            new("Oregon", "OR"),
+                            new("Pennsylvania", "PA"),
+                            new("Rhode Island", "RI"),
+                            new("South Carolina", "SC"),
+                            new("South Dakota", "SD"),
+                            new("Tennessee", "TN"),
+                            new("Texas", "TX"),
+                            new("Utah", "UT"),
+                            new("Vermont", "VT"),
+                            new("Virginia", "VA"),
+                            new("Washington", "WA"),
+                            new("West Virginia", "WV"),
+                            new("Wisconsin", "WI"),
+                            new("Wyoming", "WY")
+                        ];
+                    case "Boundary level":
+                        return
+                        [
+                            new("Address", "Address"),
+                            new("Zip9", "Zip9"),
+                            new("Zip5", "Zip5")
+                        ];
+                    case "Get customer code from":
+                        return
+                        [
+                            new("Access User ID", CustomerCodeSource.OrderCustomerAccessUserId),
+                            new("Customer Number", CustomerCodeSource.OrderCustomerNumber),
+                            new("External ID", CustomerCodeSource.AccessUserExternalId)
+                        ];
 
-                    break;
-                case "Boundary level":
-                    options.Add("Address", "Address");
-                    options.Add("Zip9", "Zip9");
-                    options.Add("Zip5", "Zip5");
-
-                    break;
-                case "Get customer code from":
-                    options.Add(CustomerCodeSource.OrderCustomerAccessUserId, "Access User ID");
-                    options.Add(CustomerCodeSource.OrderCustomerNumber, "Customer Number");
-                    options.Add(CustomerCodeSource.AccessUserExternalId, "External ID");
-                    break;
+                    default:
+                        throw new ArgumentException(string.Format("Unknown dropdown name: '{0}'", parameterName));
+                }
             }
-
-            return options;
+            catch (Exception ex)
+            {
+                SaveLog($"Unhandled exception with message: {ex.Message}");
+                return [];
+            }
         }
 
         #region CancelTaxRequest
@@ -642,49 +339,29 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         public override void CancelTaxes(Order order)
         {
             if (string.IsNullOrEmpty(order.TaxTransactionNumber) || !EnableCommit)
-            {
                 return;
-            }
-
-            VoidTransactionModel voidTransactionModel = new VoidTransactionModel
-            {
-                code = VoidReasonCode.DocVoided
-            };
-
-            CancelTransactionResponse cancelTaxResult;
-
             try
             {
-                cancelTaxResult = PostToAvalara<CancelTransactionResponse>($"companies/{CompanyCode}/transactions/{order.TaxTransactionNumber}/void", JsonSerializer.Serialize(voidTransactionModel));
-                if (Debug)
-                {
-                    SaveAvaTaxLog(cancelTaxResult);
-                }
-            }
-            catch (Exception)
-            {
-                cancelTaxResult = null;
-                _orderDebuggingInfoService.Save(order, "Error cancelling transaction.", "AvaTax");
-            }
+                VoidTransactionResponse cancelTaxResult = GetService().VoidTransaction(CompanyCode, order.TaxTransactionNumber);
+                if (cancelTaxResult is null)
+                    throw new ArgumentNullException("The cancel response was not deserialized correctly.");
 
-            if (cancelTaxResult != null)
-            {
-                if (cancelTaxResult.status != "Cancelled")
+                if (cancelTaxResult.Status != "Cancelled")
                 {
                     var stringBuilder = new StringBuilder();
                     stringBuilder.Append("Error cancelling AvaTax transaction.");
 
-                    if (cancelTaxResult.messages?.Count > 0)
+                    if (cancelTaxResult.Messages?.Any() is true)
                     {
                         stringBuilder.Append(" Message(s) from Gateway:");
 
-                        foreach (var message in cancelTaxResult.messages)
+                        foreach (var message in cancelTaxResult.Messages)
                         {
-                            stringBuilder.Append($" Details: {message.details}");
-                            stringBuilder.Append($" RefersTo: {message.refersTo}");
-                            stringBuilder.Append($" Severity: {message.severity}");
-                            stringBuilder.Append($" Source: {message.source}");
-                            stringBuilder.Append($" Summary: {message.summary}");
+                            stringBuilder.Append($" Details: {message.Details}");
+                            stringBuilder.Append($" RefersTo: {message.RefersTo}");
+                            stringBuilder.Append($" Severity: {message.Severity}");
+                            stringBuilder.Append($" Source: {message.Source}");
+                            stringBuilder.Append($" Summary: {message.Summary}");
                         }
                     }
 
@@ -694,7 +371,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 {
                     foreach (OrderLine orderLine in order.OrderLines)
                     {
-                        if (orderLine.OrderLineType == OrderLineType.Tax && orderLine.ProductVariantText == Name)
+                        if (orderLine.OrderLineType is OrderLineType.Tax && string.Equals(orderLine.ProductVariantText, Name, StringComparison.OrdinalIgnoreCase))
                         {
                             orderLine.ProductName += " - CANCELLED";
                             Services.OrderLines.Save(orderLine);
@@ -703,6 +380,12 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
 
                     _orderDebuggingInfoService.Save(order, "Transaction was cancelled", "AvaTax");
                 }
+
+            }
+            catch (Exception ex)
+            {
+                string message = $"Error cancelling transaction. Message: {ex.Message}";
+                _orderDebuggingInfoService.Save(order, message, "AvaTax");
             }
         }
 
@@ -716,36 +399,29 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         /// <param name="order">Order instance</param>
         public override void AdjustTaxes(Order order)
         {
-            if (!order.Complete) return;
+            if (!order.Complete)
+                return;
 
             try
             {
-                var taxResult = PrepareTaxRequest(order, TransactionType.Adjust).Create();
+                CreateTransactionResponse taxResult = GetService().CreateAdjustTransaction(order, this);
 
-                if (Debug)
-                {
-                    SaveAvaTaxLog(taxResult);
-                }
-                var message = string.Format("Taxes were adjusted with ResultCode ({0})", taxResult.code);
+                var message = $"Taxes were adjusted with ResultCode ({taxResult.Code})";
 
-                if (taxResult.messages is null)
+                if (taxResult.Messages is null)
                 {
                     if (EnableCommit)
                     {
-                        message += string.Format("; TransactionId #{0}", taxResult.code);
-                        order.TaxTransactionNumber = taxResult.code;
+                        message += $"; TransactionId #{taxResult.Code}";
+                        order.TaxTransactionNumber = taxResult.Code;
                         Services.Orders.Save(order);
                     }
                     else
-                    {
-                        message += string.Format("; Commit is disabled");
-                    }
-
+                        message += "; Commit is disabled";
                 }
                 else
-                {
                     message += GetErrorMessage(taxResult);
-                }
+
                 _orderDebuggingInfoService.Save(order, message, "AvaTax");
             }
             catch (Exception err)
@@ -762,38 +438,28 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         public override void HandleProductReturns(Order order, Order originalOrder)
         {
             if (!order.Complete || !IsTaxableOrder(order))
-            {
                 return;
-            }
 
             try
             {
-                this.originalOrder = originalOrder;
-                var taxResult = GetTaxes(order, TransactionType.ProductReturns);
+                CreateTransactionResponse taxResult = GetService().CreateProductReturnsTransaction(order, this, originalOrder);
 
-                if (Debug)
-                {
-                    SaveAvaTaxLog(taxResult);
-                }
-                string message = string.Format("Handle product returns with ResultCode ({0})", taxResult.code);
-                if (taxResult.messages is null)
+                string message = $"Handle product returns with ResultCode ({taxResult.Code})";
+                if (taxResult.Messages is null)
                 {
                     GetOrderLinesFromTaxResult(order, taxResult);
                     if (EnableCommit)
                     {
-                        message += string.Format("; TransactionId #{0}", taxResult.code);
-                        order.TaxTransactionNumber = taxResult.code;
+                        message += $"; TransactionId #{taxResult.Code}";
+                        order.TaxTransactionNumber = taxResult.Code;
                         Services.Orders.Save(order);
                     }
                     else
-                    {
-                        message += string.Format("; Commit is disabled");
-                    }
+                        message += "; Commit is disabled";
                 }
                 else
-                {
                     message += GetErrorMessage(taxResult);
-                }
+
                 _orderDebuggingInfoService.Save(order, message, "AvaTax");
             }
             catch (Exception err)
@@ -805,78 +471,29 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         #endregion
 
         #region SaveAvaTaxLog
-        private string GetErrorMessage(TransactionModel taxResult)
+
+        private string GetErrorMessage(CreateTransactionResponse taxResult)
         {
             var errMessages = new StringBuilder();
-            if (taxResult.messages?.Count > 0)
+            if (taxResult.Messages?.Any() is true)
             {
-                foreach (var message in taxResult.messages)
+                foreach (AvaTaxMessage message in taxResult.Messages)
                 {
-                    errMessages.AppendLine($"Details: {message.details}");
-                    errMessages.AppendLine($"RefersTo: {message.refersTo}");
-                    errMessages.AppendLine($"Severity: {message.severity}");
-                    errMessages.AppendLine($"Source: {message.source}");
-                    errMessages.AppendLine($"Summary: {message.summary}");
+                    errMessages.AppendLine($"Details: {message.Details}");
+                    errMessages.AppendLine($"RefersTo: {message.RefersTo}");
+                    errMessages.AppendLine($"Severity: {message.Severity}");
+                    errMessages.AppendLine($"Source: {message.Source}");
+                    errMessages.AppendLine($"Summary: {message.Summary}");
                 }
             }
+
             return errMessages.ToString();
-        }
-
-        private void SaveAvaTaxLog<T>(T taxRequest)
-        {
-            try
-            {
-                var serializer = new XmlSerializer(typeof(T));
-                var writer = new StringWriter();
-                serializer.Serialize(writer, taxRequest);
-
-                SaveLog(writer.ToString());
-            }
-            catch (Exception err)
-            {
-                SaveLog(err.ToString());
-            }
-        }
-
-        #endregion
-
-        #region TestConnection
-
-        /// <summary>
-        /// Tests tax service connection
-        /// </summary>
-        /// <returns>list of result information lines</returns>
-        public ArrayList TestConnection()
-        {
-            var taxSvc = PrepareTaxSvc();
-
-            var list = new ArrayList();
-            try
-            {
-                var result = taxSvc.Ping();
-
-                if (!result.authenticated.GetValueOrDefault())
-                {
-                    list.Add("Ping was not successfull!");
-                }
-                else
-                {
-                    list.Add(string.Format("Is authenticated: {0}", result.authenticated.Value));
-                    list.Add(string.Format("Version: {0}", result.version));
-                }
-            }
-            catch (Exception ex)
-            {
-                list.Add(ex.Message);
-                SaveLog(ex.ToString());
-            }
-
-            return list;
         }
 
         #endregion
 
         #region VerifyCustomFields
+
         /// <summary>
         /// Gets the lock object that is used to synchronize access to the queue from multiple threads.
         /// </summary>
@@ -887,7 +504,6 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         /// </summary>
         public static void VerifyCustomFields()
         {
-
             lock (syncLock)
             {
                 var itemCodeColl = ProductField.FindProductFieldsBySystemName(ItemCodeFieldName);
@@ -923,9 +539,7 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 {
                     SystemField exemptionNumberField = new SystemField(ExemptionNumberFieldName, tableName, Types.Text, ExemptionNumberFieldName);
                     if (!systemFields.ContainsSystemField(exemptionNumberField))
-                    {
                         exemptionNumberField.Save();
-                    }
                 }
 
                 // EntityUseCode
@@ -962,36 +576,11 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         /// <summary>
         /// Verify that all needed fields for Avalara are exist and create them if not
         /// </summary>
-        public override void OnAfterSettingsSaved()
-        {
-            VerifyCustomFields();
-        }
+        public override void OnAfterSettingsSaved() => VerifyCustomFields();
 
-        /// <summary>
-        /// Before tax calculation arguments
-        /// </summary>
-        public class BeforeTaxCalculationArgs : CancelableNotificationArgs
-        {
-            public Order Order { get; set; }
-        }
+        internal bool IsTaxableTypeInternal(OrderLine orderLine) => IsTaxableType(orderLine);
 
-        /// <summary>
-        /// Before tax commit arguments
-        /// </summary>
-        public class BeforeTaxCommitArgs : CancelableNotificationArgs
-        {
-            public Order Order { get; set; }
-        }
-
-        /// <summary>
-        /// Args class to get the customer code to send to Avalara.
-        /// </summary>
-        public class OnGetCustomerCodeArgs : NotificationArgs
-        {
-            public Order Order { get; set; }
-            public string CustomerCode { get; set; }
-        }
-
+        internal PriceInfo GetProductPriceWithoutDiscountsInternal(OrderLine orderLine) => GetProductPriceWithoutDiscounts(orderLine);
 
         #region AddTaxesToProducts
 
@@ -1003,50 +592,44 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         {
             try
             {
-                if (DontUseInProductCatalog) return;
-
-                var order = PrepareOrder(products);
-                if (order == null || !IsTaxableOrder(order))
-                {
+                if (DontUseInProductCatalog)
                     return;
-                }
 
-                var taxResult = GetTaxes(order, TransactionType.Calculate);
-                if (Debug)
+                Order order = PrepareOrder(products);
+                if (order is null || !IsTaxableOrder(order))
+                    return;
+
+                CreateTransactionResponse taxResult = GetService().CreateCalculateTransaction(order, this);
+
+                if (taxResult.Messages is null)
                 {
-                    SaveAvaTaxLog(taxResult);
-                }
-                if (taxResult.messages is null)
-                {
-                    if (taxResult.totalTax > 0)
+                    if (taxResult.TotalTax > 0)
                     {
-                        foreach (var taxLine in taxResult.lines)
+                        foreach (var taxLine in taxResult.Lines)
                         {
-                            foreach (var taxDetail in taxLine.details)
+                            foreach (var taxDetail in taxLine.Details)
                             {
-                                var orderLine = order.OrderLines.FirstOrDefault(line => line.Id == taxLine.lineNumber);
-                                if (orderLine != null)
-                                {
+                                OrderLine orderLine = order.OrderLines.FirstOrDefault(line => line.Id.Equals(taxLine.LineNumber, StringComparison.Ordinal));
+                                if (orderLine is not null)
                                     products.FirstOrDefault(obj => obj.Id == orderLine.ProductId)?.TaxCollection.Add(GetTax(orderLine.Product, taxDetail));
-                                }
                             }
                         }
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // error
+                SaveLog(ex.ToString());
             }
         }
 
-        private Tax GetTax(Product product, TransactionLineDetailModel taxDetail)
+        private Tax GetTax(Product product, TransactionLineDetail taxDetail)
         {
             var tax = new Tax();
-            tax.Name = taxDetail.taxName;
+            tax.Name = taxDetail.TaxName;
             tax.Product = product;
 
-            tax.Amount = new PriceRaw((double)taxDetail.tax, Services.Currencies.GetDefaultCurrency());
+            tax.Amount = new PriceRaw((double)taxDetail.Tax, Services.Currencies.GetDefaultCurrency());
             tax.CalculateVat = true; //AddVAT;
 
             return tax;
@@ -1055,9 +638,9 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         private Order PrepareOrder(IEnumerable<Product> products)
         {
             Order order = null;
-            var currentCart = Common.Context.Cart;
+            Order currentCart = Common.Context.Cart;
 
-            if (currentCart != null && (!string.IsNullOrEmpty(currentCart.CustomerZip) || !string.IsNullOrEmpty(currentCart.DeliveryZip)))
+            if (!string.IsNullOrEmpty(currentCart?.CustomerZip) || !string.IsNullOrEmpty(currentCart?.DeliveryZip))
             {
                 order = new Order(currentCart.Currency, currentCart.VatCountry, currentCart.Language);
                 order.Id = "ProductTaxesC";
@@ -1080,9 +663,8 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
             }
             else
             {
-                var user = User.GetCurrentUser(PagePermissionLevels.Frontend);
-
-                if (user != null)
+                User user = UserContext.Current.User;
+                if (user is not null)
                 {
                     order = new Order(Common.Context.Currency, Common.Context.Country, Common.Context.Language);
                     order.Id = "ProductTaxesU";
@@ -1093,8 +675,8 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                     order.CustomerAccessUserId = user.ID;
                     order.CustomerAccessUserUserName = user.UserName;
 
-                    var defaultAddress = UserAddress.GetUserDefaultAddress(user.ID);
-                    if (defaultAddress != null)
+                    UserAddress defaultAddress = UserManagementServices.UserAddresses.GetDefaultAddressByUserId(user.ID);
+                    if (defaultAddress is not null)
                     {
                         order.CustomerAddress = defaultAddress.Address;
                         order.CustomerAddress2 = defaultAddress.Address2;
@@ -1120,14 +702,14 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
 
         private void PrepareOrderDetails(Order order, IEnumerable<Product> products)
         {
-            if (order != null)
+            if (order is null)
+                return;
+
+            for (int i = 0; i < products.Count(); i++)
             {
-                var i = 0;
-                foreach (Product product in products)
-                {
-                    var orderLine = Services.OrderLines.Create(order, product, 1d, null, null);
-                    orderLine.Id = (i++).ToString();
-                }
+                Product product = products.ElementAt(i);
+                OrderLine orderLine = Services.OrderLines.Create(order, product, 1d, null, null);
+                orderLine.Id = i.ToString();
             }
         }
 
