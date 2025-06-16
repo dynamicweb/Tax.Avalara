@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
-		<VersionPrefix>10.15.0</VersionPrefix>
+		<VersionPrefix>10.16.0</VersionPrefix>
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
 		<Title>Avalara</Title>
 		<Description>Avalara tax provider</Description>
@@ -24,8 +24,8 @@
 		<PackageIcon>Avalara-logo.png</PackageIcon>
 	</PropertyGroup>
 	<ItemGroup>
-		<PackageReference Include="Dynamicweb" Version="10.15.1" />
-		<PackageReference Include="Dynamicweb.Ecommerce" Version="10.15.1" />
+		<PackageReference Include="Dynamicweb" Version="10.16.4" />
+		<PackageReference Include="Dynamicweb.Ecommerce" Version="10.16.4" />
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.1.1" PrivateAssets="All" />
 	</ItemGroup>
 	<ItemGroup>

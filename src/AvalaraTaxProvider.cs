@@ -29,10 +29,10 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
         /// <summary>
         /// Gets the names for ItemCode and TaxCode field.
         /// </summary>
-        internal const string ItemCodeFieldName = "ItemCode";
-        internal const string TaxCodeFieldName = "TaxCode";
-        internal const string ExemptionNumberFieldName = "ExemptionNumber";
-        internal const string EntityUseCodeFieldName = "EntityUseCode";
+        internal const string ItemCodeFieldName = "AvalaraItemCode";
+        internal const string TaxCodeFieldName = "AvalaraTaxCode";
+        internal const string ExemptionNumberFieldName = "AvalaraExemptionNumber";
+        internal const string EntityUseCodeFieldName = "AvalaraEntityUseCode";
         public const string BeforeTaxCalculation = "Ecom7CartBeforeTaxCalculation";
         public const string BeforeTaxCommit = "Ecom7CartBeforeTaxCommit";
         public const string OnGetCustomerCode = "Ecom7CartAvalaraOnGetCustomerCode";
@@ -509,10 +509,10 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 var itemCodeColl = ProductField.FindProductFieldsBySystemName(ItemCodeFieldName);
                 var taxCodeColl = ProductField.FindProductFieldsBySystemName(TaxCodeFieldName);
 
-                if (itemCodeColl.Count() == 0)
+                if (!itemCodeColl.Any())
                 {
                     var productField = new ProductField();
-                    productField.Name = ItemCodeFieldName;
+                    productField.Name = "Avalara Item Code";
                     productField.SystemName = ItemCodeFieldName;
                     productField.TemplateName = ItemCodeFieldName;
                     productField.TypeId = 1;
@@ -520,10 +520,10 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                     productField.Save(ItemCodeFieldName);
                 }
 
-                if (taxCodeColl.Count() == 0)
+                if (!taxCodeColl.Any())
                 {
                     var productField = new ProductField();
-                    productField.Name = TaxCodeFieldName;
+                    productField.Name = "Avalara Tax Code";
                     productField.SystemName = TaxCodeFieldName;
                     productField.TemplateName = TaxCodeFieldName;
                     productField.TypeId = 15;
@@ -533,40 +533,41 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider
                 }
 
                 string tableName = "AccessUser";
-                var systemFields = SystemField.GetSystemFields(tableName);
+                var customFields = CustomField.GetCustomFields(tableName);
 
-                // ExemptionNumber
-                {
-                    SystemField exemptionNumberField = new SystemField(ExemptionNumberFieldName, tableName, Types.Text, ExemptionNumberFieldName);
-                    if (!systemFields.ContainsSystemField(exemptionNumberField))
-                        exemptionNumberField.Save();
-                }
+                // ExemptionNumber                
+                var exemptionNumberField = new CustomField(ExemptionNumberFieldName, tableName, Types.Text);
+                exemptionNumberField.Name = "Avalara Exemption Number";
+                if (!customFields.ContainsCustomField(exemptionNumberField))
+                    exemptionNumberField.Save();
 
-                // EntityUseCode
+                // EntityUseCode                
+                var entityUseCodeField = new CustomField(EntityUseCodeFieldName, tableName, Types.DropDown);
+                entityUseCodeField.Name = "Avalara Entity Use Code";
+
+                if (!customFields.ContainsCustomField(entityUseCodeField))
                 {
-                    SystemField entityUseCodeField = new SystemField(EntityUseCodeFieldName, tableName, Types.DropDown, EntityUseCodeFieldName);
-                    if (!systemFields.ContainsSystemField(entityUseCodeField))
-                    {
-                        var options = new CustomFieldOptions();
-                        options.DataType = Types.Text;
-                        options.Add(new KeyValuePair<string, object>("", ""));
-                        options.Add(new KeyValuePair<string, object>("Federal government", "A"));
-                        options.Add(new KeyValuePair<string, object>("State government", "B"));
-                        options.Add(new KeyValuePair<string, object>("Tribe / Status Indian / Indian Band", "C"));
-                        options.Add(new KeyValuePair<string, object>("Foreign diplomat", "D"));
-                        options.Add(new KeyValuePair<string, object>("Charitable or benevolent org", "E"));
-                        options.Add(new KeyValuePair<string, object>("Religious org", "F"));
-                        options.Add(new KeyValuePair<string, object>("Education org", "M"));
-                        options.Add(new KeyValuePair<string, object>("Resale", "G"));
-                        options.Add(new KeyValuePair<string, object>("Commercial agricultural production", "H"));
-                        options.Add(new KeyValuePair<string, object>("Industrial production / manufacturer", "I"));
-                        options.Add(new KeyValuePair<string, object>("Direct pay permit", "J"));
-                        options.Add(new KeyValuePair<string, object>("Direct mail", "K"));
-                        options.Add(new KeyValuePair<string, object>("Other (requires Exempt Reason Desc)", "L"));
-                        options.Add(new KeyValuePair<string, object>("Local government", "N"));
-                        entityUseCodeField.Options = options;
-                        entityUseCodeField.Save();
-                    }
+                    var options = new CustomFieldOptions();
+                    options.DataType = Types.Text;
+                    options.Add(new KeyValuePair<string, object>("", ""));
+                    options.Add(new KeyValuePair<string, object>("Federal government", "A"));
+                    options.Add(new KeyValuePair<string, object>("State government", "B"));
+                    options.Add(new KeyValuePair<string, object>("Tribe / Status Indian / Indian Band", "C"));
+                    options.Add(new KeyValuePair<string, object>("Foreign diplomat", "D"));
+                    options.Add(new KeyValuePair<string, object>("Charitable or benevolent org", "E"));
+                    options.Add(new KeyValuePair<string, object>("Religious org", "F"));
+                    options.Add(new KeyValuePair<string, object>("Education org", "M"));
+                    options.Add(new KeyValuePair<string, object>("Resale", "G"));
+                    options.Add(new KeyValuePair<string, object>("Commercial agricultural production", "H"));
+                    options.Add(new KeyValuePair<string, object>("Industrial production / manufacturer", "I"));
+                    options.Add(new KeyValuePair<string, object>("Direct pay permit", "J"));
+                    options.Add(new KeyValuePair<string, object>("Direct mail", "K"));
+                    options.Add(new KeyValuePair<string, object>("Other (requires Exempt Reason Desc)", "L"));
+                    options.Add(new KeyValuePair<string, object>("Local government", "N"));
+                    options.Add(new KeyValuePair<string, object>("Non-Exempt taxable customer", "TAXABLE"));
+
+                    entityUseCodeField.Options = options;
+                    entityUseCodeField.Save();
                 }
             }
         }
