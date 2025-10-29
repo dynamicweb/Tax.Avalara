@@ -3,6 +3,13 @@ name: Call common build and push
 on:
   push:
     branches: [ "main" ]
+    
+permissions:
+  actions: write
+  checks: write
+  pull-requests: write
+  statuses: read
+  contents: read
  
 jobs:
   call-pushworkflow:
