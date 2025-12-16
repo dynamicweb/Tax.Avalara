@@ -101,18 +101,20 @@ internal sealed class PrepareTransactionHelper
                 if (orderLine.HasType(OrderLineType.PointProduct))
                     orderDiscount += -Convert.ToDouble(orderLine.Product.GetPrice(priceContext).PriceWithoutVAT);
             }
-            else if (orderLine.HasType(OrderLineType.Discount) && string.IsNullOrEmpty(orderLine.GiftCardCode))
+            else if (orderLine.HasType(OrderLineType.Discount) &&
+                     string.IsNullOrEmpty(orderLine.GiftCardCode) &&
+                     string.IsNullOrEmpty(orderLine.ParentLineId))
+            {
                 orderDiscount += Convert.ToDouble(orderLine.Price.PriceWithoutVAT);
+            }
         }
 
         orderDiscount = Math.Abs(orderDiscount);
         if (orderDiscount > 0)
         {
-            foreach (LineItem line in request.Lines)
-            {
-                if (string.Equals(line.TaxCode, Provider.TaxCodeShipping, StringComparison.Ordinal))
-                    line.Discounted = true;
-            }
+            foreach (LineItem line in request.Lines)            
+                line.Discounted = true;
+            
             request.Discount = orderDiscount;
         }
 
@@ -191,7 +193,7 @@ internal sealed class PrepareTransactionHelper
 
         PriceInfo price = orderLine.HasType(OrderLineType.PointProduct)
             ? orderLine.Product.GetPrice(priceContext)
-            : Provider.GetProductPriceWithoutDiscountsInternal(orderLine);
+            : orderLine.TotalPriceWithProductDiscounts;
 
         line.Amount = Convert.ToDouble(price.PriceWithoutVAT);
         line.Description = orderLine.ProductName;
