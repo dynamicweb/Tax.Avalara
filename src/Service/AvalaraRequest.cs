@@ -1,7 +1,7 @@
 ﻿using Dynamicweb.Core;
-using Dynamicweb.Logging;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -16,130 +16,148 @@ namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Service;
 /// </summary>
 internal static class AvalaraRequest
 {
+    private const string JsonMediaType = "application/json";
+
     public static string SendRequest(string accountId, string licenseKey, string apiUrl, CommandConfiguration configuration)
     {
-        using var messageHandler = GetMessageHandler();
-        using var client = new HttpClient(messageHandler);
+        using HttpMessageHandler messageHandler = CreateMessageHandler();
+        using HttpClient client = CreateHttpClient(messageHandler, apiUrl, accountId, licenseKey);
 
-        client.BaseAddress = new Uri(apiUrl);
-        client.Timeout = new TimeSpan(0, 0, 0, 90);
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        string authenticationParameter = Convert.ToBase64String(Encoding.Default.GetBytes($"{accountId}:{licenseKey}"));
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authenticationParameter);
-
-        string apiCommand = GetCommandLink(
-            apiUrl, 
-            configuration.CommandType, 
-            configuration.OperatorId, 
-            configuration.OperatorSecondId, 
-            configuration.QueryStringParameters
-        );
-
-        Task<HttpResponseMessage> requestTask = configuration.CommandType switch
-        {
-            //GET
-            ApiCommand.ResolveAddress => client.GetAsync(apiCommand),
-            //POST
-            ApiCommand.CreateTransaction or
-            ApiCommand.VoidTransaction => client.PostAsync(apiCommand, GetStringContent(configuration)),
-            _ => throw new NotImplementedException($"Unknown operation was used. The operation code: {configuration.CommandType}.")
-        };
+        var logger = new AvalaraRequestLogger(configuration.DebugLog);
+        logger.InitializeLog(apiUrl);
 
         try
         {
-            using HttpResponseMessage response = requestTask.GetAwaiter().GetResult();
-
-            string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-            if (configuration.DebugLog)
-            {
-                var logText = new StringBuilder("Remote server response:");
-                logText.AppendLine($"HttpStatusCode = {response.StatusCode}");
-                logText.AppendLine($"HttpStatusDescription = {response.ReasonPhrase}");
-                logText.AppendLine($"Response text: {responseText}");
-
-                Log(logText.ToString(), false, configuration.CommandType);
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                string errorMessage = $"Unhandled exception. Operation failed: {response.ReasonPhrase}. Response text: ${responseText}";
-                Log(errorMessage, false, configuration.CommandType);
-
-                throw new Exception(errorMessage);
-            }
-
-            return responseText;
+            return ExecuteRequest(client, configuration, logger);
         }
         catch (HttpRequestException requestException)
         {
-            string errorMessage = $"An error occurred during Avalara request. Error code: {requestException.StatusCode}";
-            Log(errorMessage, false, configuration.CommandType);
-            throw new Exception(errorMessage);
+            logger.LogHttpRequestException(requestException);
+            throw;
         }
-
-        HttpMessageHandler GetMessageHandler() => new HttpClientHandler()
+        catch (Exception ex)
         {
-            AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip
-        };
+            logger.LogUnhandledException(ex);
+            throw;
+        }
+        finally
+        {
+            logger.FinalizeLog(configuration.CommandType);
+        }
     }
 
-    private static HttpContent GetStringContent(CommandConfiguration configuration)
+    private static HttpMessageHandler CreateMessageHandler() => new HttpClientHandler
     {
-        string content = Converter.SerializeCompact(configuration.Data);
+        AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip
+    };
 
+    private static string ExecuteRequest(HttpClient client, CommandConfiguration configuration, AvalaraRequestLogger logger)
+    {
+        string baseAddress = client.BaseAddress.ToString().TrimEnd('/');
+        string apiCommand = GetCommandLink(baseAddress, configuration, true);
+        LogRequestInfo(baseAddress, configuration, logger);
+
+        Task<HttpResponseMessage> requestTask = configuration.CommandType switch
+        {
+            ApiCommand.ResolveAddress => client.GetAsync(apiCommand),
+            ApiCommand.CreateTransaction or
+            ApiCommand.VoidTransaction => client.PostAsync(apiCommand, GetStringContent(configuration, logger)),
+            _ => throw new NotImplementedException($"Unknown operation was used. The operation code: {configuration.CommandType}.")
+        };
+
+        using HttpResponseMessage response = requestTask.GetAwaiter().GetResult();
+        string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+
+        logger.LogResponse(response, responseText);
+        ValidateResponse(response, configuration, logger);
+
+        return responseText;
+    }
+
+    private static void LogRequestInfo(string baseAddress, CommandConfiguration configuration, AvalaraRequestLogger logger)
+    {
+        if (!configuration.DebugLog)
+            return;
+
+        string readableUrl = GetCommandLink(baseAddress, configuration, false);
+        logger.LogRequestInfo(readableUrl);
+    }
+
+    private static void ValidateResponse(HttpResponseMessage response, CommandConfiguration configuration, AvalaraRequestLogger logger)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        string errorMessage = $"Command {configuration.CommandType} failed: {response.ReasonPhrase}.";
+        logger.LogError(errorMessage);
+
+        throw new AvalaraException(errorMessage, configuration.CommandType, response.StatusCode);
+    }
+
+    private static HttpClient CreateHttpClient(HttpMessageHandler handler, string apiUrl, string accountId, string licenseKey)
+    {
+        var client = new HttpClient(handler);
+
+        client.BaseAddress = new Uri(apiUrl);
+        client.Timeout = TimeSpan.FromSeconds(90);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue(JsonMediaType));
+
+        string authenticationParameter = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{accountId}:{licenseKey}"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authenticationParameter);
+
+        return client;
+    }
+
+    private static HttpContent GetStringContent(CommandConfiguration configuration, AvalaraRequestLogger logger)
+    {
         if (configuration.DebugLog)
-            Log($"Request data: {content}", true, configuration.CommandType);
+        {
+            string serializedData = Converter.Serialize(configuration.Data);
+            logger.LogRequestData(serializedData);
+        }
 
-        return new StringContent(content, Encoding.UTF8, "application/json");
+        string content = Converter.SerializeCompact(configuration.Data);
+        return new StringContent(content, Encoding.UTF8, JsonMediaType);
     }
 
-    private static string GetCommandLink(string baseAddress, ApiCommand command, string operatorId, string operatorSecondId, Dictionary<string, string> queryParameters)
+    private static string GetCommandLink(string baseAddress, CommandConfiguration configuration, bool escapeParameters)
     {
-        return command switch
+        string gateway = configuration.CommandType switch
         {
-            ApiCommand.CreateTransaction => GetCommandLink("transactions/create"),
-            ApiCommand.ResolveAddress => GetCommandLink("addresses/resolve", queryParameters),
-            ApiCommand.VoidTransaction => GetCommandLink($"companies/{operatorId}/transactions/{operatorSecondId}/void"),
-            _ => throw new NotImplementedException($"The api command is not supported. Command: {command}")
+            ApiCommand.CreateTransaction => "transactions/create",
+            ApiCommand.ResolveAddress => "addresses/resolve",
+            ApiCommand.VoidTransaction => $"companies/{configuration.OperatorId}/transactions/{configuration.OperatorSecondId}/void",
+            _ => throw new NotImplementedException($"The api command is not supported. Command: {configuration.CommandType}")
         };
 
-        string GetCommandLink(string gateway, Dictionary<string, string> queryParameters = null)
-        {
-            string link = $"{baseAddress}/{gateway}";
+        string link = $"{baseAddress}/{gateway}";
 
-            if (queryParameters?.Count is 0 or null)
-                return link;
-
-            string parameters = string.Join("&", queryParameters.Select(parameter => $"{parameter.Key}={parameter.Value}"));
-
-            return $"{link}?{parameters}";
-        }
+        return AppendQueryParameters(link, configuration.QueryStringParameters, escapeParameters);
     }
 
-    private static void Log(string message, bool isRequest, ApiCommand commandType)
+    private static string AppendQueryParameters(string link, Dictionary<string, string> queryParameters, bool escapeParameters)
     {
-        string type = isRequest ? "Request" : "Response";
-        var errorMessage = new StringBuilder($"{type} for command: '{commandType}'.");
-        errorMessage.AppendLine(message);
+        if (queryParameters?.Any() is not true)
+            return link;
 
-        if (commandType is ApiCommand.ResolveAddress)
-            LogAddressValidator(message);
-        else
-            LogAvalara(message);
+        var validParameters = queryParameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Value))
+            .ToDictionary(parameter => parameter.Key, parameter => parameter.Value);
+
+        if (!validParameters.Any())
+            return link;
+
+        IEnumerable<string> parameterStrings = validParameters.Select(param => FormatQueryParameter(param, escapeParameters));
+        string queryString = string.Join("&", parameterStrings);
+
+        return $"{link}?{queryString}";
     }
 
-    private static void LogAvalara(string message)
+    private static string FormatQueryParameter(KeyValuePair<string, string> parameter, bool escapeParameters)
     {
-        string fullName = typeof(AvalaraTaxProvider).FullName;
-        LogManager.Current.GetLogger($"/eCom/TaxProvider/{fullName}").Info(message);
-        LogManager.System.GetLogger("Provider", fullName).Info(message);
-    }
+        if (escapeParameters)
+            return $"{Uri.EscapeDataString(parameter.Key)}={Uri.EscapeDataString(parameter.Value)}";
 
-    private static void LogAddressValidator(string message)
-    {
-        string name = typeof(AvalaraAddressValidatorProvider).FullName ?? "AddressValidationProvider";
-        LogManager.Current.GetLogger(string.Format("/eCom/AddressValidatorProvider/{0}", name)).Info(message);
-        LogManager.System.GetLogger(LogCategory.Provider, name).Info(message);
+        return $"{parameter.Key}={parameter.Value}";
     }
 }

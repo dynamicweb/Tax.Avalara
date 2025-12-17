@@ -8,7 +8,7 @@ using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model.Enums;
 using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Notifications;
 using Dynamicweb.Extensibility.Notifications;
 using Dynamicweb.Security.UserManagement;
-using Dynamicweb.Security.UserManagement.Common.SystemFields;
+using Dynamicweb.Security.UserManagement.Common.CustomFields;
 using System;
 
 namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Service;
@@ -156,12 +156,12 @@ internal sealed class PrepareTransactionHelper
         if (UserManagementServices.Users.GetUserById(Order.CustomerAccessUserId) is not User customer)
             return;
 
-        foreach (SystemFieldValue fieldValue in customer.SystemFieldValues)
+        foreach (CustomFieldValue fieldValue in customer.CustomFieldValues)
         {
-            if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.ExemptionNumberFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
+            if (string.Equals(fieldValue.CustomField.SystemName, AvalaraTaxProvider.ExemptionNumberFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
                 request.ExemptionNumber = fieldValue.Value.ToString();
-            else if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.EntityUseCodeFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
-                request.CustomerUsageType = fieldValue.Value.ToString();
+            else if (string.Equals(fieldValue.CustomField.SystemName, AvalaraTaxProvider.EntityUseCodeFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
+                request.EntityUseCode = fieldValue.Value.ToString();
         }
     }
 
