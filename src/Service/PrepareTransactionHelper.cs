@@ -8,7 +8,7 @@ using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Model.Enums;
 using Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Notifications;
 using Dynamicweb.Extensibility.Notifications;
 using Dynamicweb.Security.UserManagement;
-using Dynamicweb.Security.UserManagement.Common.SystemFields;
+using Dynamicweb.Security.UserManagement.Common.CustomFields;
 using System;
 
 namespace Dynamicweb.Ecommerce.TaxProviders.AvalaraTaxProvider.Service;
@@ -101,18 +101,20 @@ internal sealed class PrepareTransactionHelper
                 if (orderLine.HasType(OrderLineType.PointProduct))
                     orderDiscount += -Convert.ToDouble(orderLine.Product.GetPrice(priceContext).PriceWithoutVAT);
             }
-            else if (orderLine.HasType(OrderLineType.Discount) && string.IsNullOrEmpty(orderLine.GiftCardCode))
+            else if (orderLine.HasType(OrderLineType.Discount) &&
+                     string.IsNullOrEmpty(orderLine.GiftCardCode) &&
+                     string.IsNullOrEmpty(orderLine.ParentLineId))
+            {
                 orderDiscount += Convert.ToDouble(orderLine.Price.PriceWithoutVAT);
+            }
         }
 
         orderDiscount = Math.Abs(orderDiscount);
         if (orderDiscount > 0)
         {
-            foreach (LineItem line in request.Lines)
-            {
-                if (string.Equals(line.TaxCode, Provider.TaxCodeShipping, StringComparison.Ordinal))
-                    line.Discounted = true;
-            }
+            foreach (LineItem line in request.Lines)            
+                line.Discounted = true;
+            
             request.Discount = orderDiscount;
         }
 
@@ -156,12 +158,12 @@ internal sealed class PrepareTransactionHelper
         if (UserManagementServices.Users.GetUserById(Order.CustomerAccessUserId) is not User customer)
             return;
 
-        foreach (SystemFieldValue fieldValue in customer.SystemFieldValues)
+        foreach (CustomFieldValue fieldValue in customer.CustomFieldValues)
         {
-            if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.ExemptionNumberFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
+            if (string.Equals(fieldValue.CustomField.SystemName, AvalaraTaxProvider.ExemptionNumberFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
                 request.ExemptionNumber = fieldValue.Value.ToString();
-            else if (string.Equals(fieldValue.SystemField.Name, AvalaraTaxProvider.EntityUseCodeFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
-                request.CustomerUsageType = fieldValue.Value.ToString();
+            else if (string.Equals(fieldValue.CustomField.SystemName, AvalaraTaxProvider.EntityUseCodeFieldName, StringComparison.OrdinalIgnoreCase) && fieldValue.Value is not null)
+                request.EntityUseCode = fieldValue.Value.ToString();
         }
     }
 
@@ -191,7 +193,7 @@ internal sealed class PrepareTransactionHelper
 
         PriceInfo price = orderLine.HasType(OrderLineType.PointProduct)
             ? orderLine.Product.GetPrice(priceContext)
-            : Provider.GetProductPriceWithoutDiscountsInternal(orderLine);
+            : orderLine.TotalPriceWithProductDiscounts;
 
         line.Amount = Convert.ToDouble(price.PriceWithoutVAT);
         line.Description = orderLine.ProductName;
